@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHerdrEvents, createRelevanceFilter, feedLines, herdrSocketPath } from "./events";
+import path from "node:path";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const listen = (srv: net.Server, sock: string) => new Promise<void>((r) => srv.listen(sock, r));
@@ -36,6 +37,11 @@ test("stop cancels a pending reconnect for good", async () => {
 });
 
 test("stop+start (tunnel-recovery kick) never accumulates connections", async () => {
+  // Windows does not report the server-side close of a torn-down client socket
+  // promptly, so this connection-accounting test cannot distinguish a stale
+  // handle from a leaked connection there. The event client is unused on
+  // Windows anyway (Node cannot open herdr's AF_UNIX socket), see plugin.ts.
+  if (process.platform === "win32") return;
   const sock = path.join(os.tmpdir(), `ev-test-kick-${process.pid}.sock`);
   fs.rmSync(sock, { force: true });
   let active = 0;
@@ -105,6 +111,14 @@ test("herdrSocketPath honors HERDR_SOCKET_PATH then falls back to the default", 
   process.env.HERDR_SOCKET_PATH = "/tmp/x.sock";
   expect(herdrSocketPath()).toBe("/tmp/x.sock");
   delete process.env.HERDR_SOCKET_PATH;
-  expect(herdrSocketPath().endsWith("/.config/herdr/herdr.sock")).toBe(true);
+  // Windows keeps the socket under roaming app data, POSIX under ~/.config.
+  const fallback = herdrSocketPath();
+  expect(fallback.endsWith(path.join(".config", "herdr", "herdr.sock"))).toBe(
+    process.platform !== "win32",
+  );
+  if (process.platform === "win32") {
+    expect(path.basename(fallback)).toBe("herdr.sock");
+  }
   if (prev !== undefined) process.env.HERDR_SOCKET_PATH = prev;
 });
+

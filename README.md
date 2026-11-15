@@ -50,13 +50,19 @@ agent that's waiting on you.
 - Elgato Stream Deck app **7.4.2**
 - **herdr 0.8.0**
 
+Windows was added in 0.3.0 and verified on:
+
+- **Stream Deck** (keypad) on Windows 11
+- Elgato Stream Deck app **7.6.1**
+- **herdr 0.9.5**, Windows Terminal
+
 The plugin is keypad-only and works on any Stream Deck model with keys. The
 default layout assumes the 6-key Mini, but you can place the two actions on a
 deck of any size.
 
 ## Requirements
 
-- macOS 12 or newer
+- macOS 12 or newer, or Windows 10 or newer
 - [Elgato Stream Deck](https://www.elgato.com/stream-deck) app 7.1+
 - [herdr](https://herdr.dev) 0.8.0+ installed and running (`herdr` on your `PATH`)
 - To build from source: [Bun](https://bun.sh) and Node.js 24
@@ -86,8 +92,8 @@ bun run build
 bunx streamdeck pack dev.timvdhoorn.herdr-agents.sdPlugin
 ```
 
-This writes `dev.timvdhoorn.herdr-agents.streamDeckPlugin` — double-click it to
-install into the Stream Deck app.
+This writes `dev.timvdhoorn.herdr-agents.streamDeckPlugin` - double-click it to
+install into the Stream Deck app. The same file installs on Windows.
 
 ## Layout & usage
 
@@ -187,6 +193,33 @@ socket. Focusing an agent switches the pane on the server, which your
 so "press = focus" works exactly as in the local setup. ssh is spawned without
 a shell and the target is passed after `--`, so the settings text can't inject
 options.
+
+## Windows
+
+The plugin runs on Windows, with three differences from macOS:
+
+| | macOS | Windows |
+| --- | --- | --- |
+| Status updates | herdr socket events (push) + 3 s safety poll | 1 s poll — Node cannot open herdr's AF_UNIX socket on Windows |
+| Press = focus | `herdr agent focus` + AppleScript raise of the terminal app | `herdr agent focus` + Win32 raise of the window that hosts herdr |
+| Remote herdr over SSH | supported | not available (the ssh forward needs Unix sockets); the Property Inspector hides it |
+
+Focus works out of the box: the plugin walks up from the running `herdr.exe` to
+the terminal that owns a visible window — Windows Terminal, Orca, WezTerm,
+Alacritty, or whatever else hosts it — and raises that window. Windows refuses
+`SetForegroundWindow` from a process that did not receive the last input event,
+so the plugin taps Alt first, which is what makes the raise work from a Stream
+Deck press.
+
+To raise one specific terminal instead of the detected one, set
+`HERDR_DECK_TERMINAL_APP` to its process name (comma-separated for a preference
+order), e.g. `WindowsTerminal` or `Orca,WindowsTerminal`. The name is read when
+the plugin starts, so restart the plugin after changing it.
+
+If `herdr` is not on the environment the Stream Deck app was started with, the
+plugin looks in herdr's own install directory
+(`%USERPROFILE%\.herdr\packages\standalone\releases\*\herdr.exe`, newest
+version first) before falling back to `herdr.exe` on `PATH`.
 
 ## Configuration
 

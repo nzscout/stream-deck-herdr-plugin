@@ -6,7 +6,11 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
 export function herdrSocketPath(): string {
-  return process.env.HERDR_SOCKET_PATH ?? path.join(os.homedir(), ".config", "herdr", "herdr.sock");
+  if (process.env.HERDR_SOCKET_PATH) return process.env.HERDR_SOCKET_PATH;
+  // herdr keeps its socket under roaming app data on Windows, ~/.config elsewhere.
+  const appData = process.env.APPDATA;
+  if (process.platform === "win32" && appData) return path.join(appData, "herdr", "herdr.sock");
+  return path.join(os.homedir(), ".config", "herdr", "herdr.sock");
 }
 
 // Pure: split an accumulated buffer + new chunk into complete lines and the

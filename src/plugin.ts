@@ -15,13 +15,21 @@ import type { Agent } from "./core/agents";
 // Empty sshTarget = talk to the herdr server on this machine (the default).
 type GlobalSettings = { sshTarget?: string; remoteSocketPath?: string };
 
+// Node's `net` module cannot open herdr's AF_UNIX socket on Windows (it treats
+// the path as a named pipe and fails with ENOTSOCK), so there is no push channel
+// there and the poll runs at full speed instead. Remote mode forwards that same
+// socket over ssh, which is POSIX-only, so it is unavailable on Windows too.
+const PUSH_EVENTS = process.platform !== "win32";
+const POLL_MS = PUSH_EVENTS ? 3000 : 1000;
+
 streamDeck.logger.setLevel("info");
 
 let tunnel: Tunnel | null = null;
 
 // In remote mode every herdr CLI call targets the SSH-forwarded socket.
 const herdr = createHerdrClient({ socketPath: () => tunnel?.localSocket });
-// undefined app → default (iTerm); set HERDR_DECK_TERMINAL_APP to override.
+// undefined app → default: iTerm on macOS, herdr's host terminal on Windows.
+// Set HERDR_DECK_TERMINAL_APP to override either.
 const terminal = createTerminalActivator({ app: process.env.HERDR_DECK_TERMINAL_APP });
 const store = createAgentStore({ fetchAgents: () => herdr.listAgents() });
 
@@ -86,11 +94,16 @@ const applyConnection = (gs: GlobalSettings): void => {
   // re-render from priming the baseline with the old server's list.
   store.reset();
 
-  if (target === "") {
+  if (target === "" || !PUSH_EVENTS) {
+    if (target !== "") {
+      streamDeck.logger.warn("remote herdr needs a POSIX ssh socket forward; ignoring it on this platform");
+    }
     streamDeck.logger.info("herdr connection: local");
-    const ev = createHerdrEvents({ onChange: refresh });
-    events = ev;
-    ev.start();
+    if (PUSH_EVENTS) {
+      const ev = createHerdrEvents({ onChange: refresh });
+      events = ev;
+      ev.start();
+    }
   } else {
     streamDeck.logger.info(`herdr connection: remote via ssh ${target}`);
     const t = createSshTunnel({
@@ -113,7 +126,10 @@ const applyConnection = (gs: GlobalSettings): void => {
 
 // Stream Deck stops the plugin by terminating the process; without this the
 // ssh forward child would outlive us and its socket file would leak in tmpdir.
-process.on("exit", () => tunnel?.stop());
+process.on("exit", () => {
+  tunnel?.stop();
+  terminal.dispose();
+});
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.on(sig, () => process.exit(0)); // run the exit handler
 }
@@ -125,4 +141,4 @@ streamDeck.actions.registerAction(pager);
 
 await streamDeck.connect();
 applyConnection(await streamDeck.settings.getGlobalSettings<GlobalSettings>());
-store.start(3000); // safety net; socket events drive the fast path
+store.start(POLL_MS); // socket events drive the fast path where the platform has them
