@@ -20,9 +20,10 @@
         <option value="title">Terminal title</option>
       </sdpi-select>
     </sdpi-item>
-    <!-- Connection settings are global: shared by every key of this plugin. -->
+    <!-- Source settings are per key: different keys can show different herdr
+         servers (two servers have their own pane ids, so they are never merged). -->
     <sdpi-item label="herdr" data-windows-only>
-      <sdpi-select setting="source" global default="local">
+      <sdpi-select setting="source" default="local">
         <option value="local">This PC (Windows)</option>
         <option value="wsl">WSL</option>
       </sdpi-select>
@@ -30,7 +31,6 @@
     <sdpi-item label="WSL distro" data-windows-only>
       <sdpi-textfield
         setting="wslDistro"
-        global
         placeholder="Ubuntu (leave empty for the default distro)"
       ></sdpi-textfield>
     </sdpi-item>
@@ -39,14 +39,12 @@
     <sdpi-item label="SSH remote" data-posix-only>
       <sdpi-textfield
         setting="sshTarget"
-        global
         placeholder="user@host - leave empty for local herdr"
       ></sdpi-textfield>
     </sdpi-item>
     <sdpi-item label="Remote socket" data-posix-only>
       <sdpi-textfield
         setting="remoteSocketPath"
-        global
         placeholder="~/.config/herdr/herdr.sock (default)"
       ></sdpi-textfield>
     </sdpi-item>
@@ -60,7 +58,7 @@
     <sdpi-item label="Terminal" data-windows-only>
       <p style="margin: 0; font-size: 8pt; color: #969696">
         A key press raises the terminal that hosts herdr - the WSL distro's
-        window when herdr runs inside WSL. Set
+        window when this key reads WSL. Set
         <code>HERDR_DECK_TERMINAL_APP</code> (e.g.
         <code>WindowsTerminal</code>) to override the detected one.
       </p>

@@ -8,14 +8,13 @@ import streamDeck, {
   type KeyDownEvent,
   type KeyUpEvent,
 } from "@elgato/streamdeck";
-import type { AgentStore } from "../core/store";
-import type { HerdrClient } from "../herdr/client";
-import type { TerminalActivator } from "../os/terminal";
+import type { HerdrRuntime, RuntimeHub } from "../core/runtime";
+import { sourceKey, sourceSpec, type SourceSettings } from "../core/sources";
 import { pageSlice, PAGE_SIZE } from "../core/pagination";
 import { labelFor, type DisplayMode } from "../core/agents";
 import { renderKeySvg } from "../core/render";
 
-type SlotSettings = { slotIndex?: number; display?: DisplayMode };
+type SlotSettings = SourceSettings & { slotIndex?: number; display?: DisplayMode };
 
 // Press-length threshold: below this a key press focuses the agent, at/above it
 // the press toggles a pin.
@@ -26,29 +25,24 @@ export class AgentSlotAction extends SingletonAction<SlotSettings> {
   readonly #slots = new Map<string, number>(); // action instance id -> slot index
   readonly #displays = new Map<string, DisplayMode>(); // action instance id -> display mode
   readonly #pressStart = new Map<string, number>(); // action instance id -> keydown timestamp
+  // Per key: which source it reads, and the unsubscribe for that source's updates.
+  readonly #sources = new Map<string, { key: string; runtime: HerdrRuntime; off: () => void }>();
 
-  constructor(
-    private readonly store: AgentStore,
-    private readonly herdr: HerdrClient,
-    // Replaced when the herdr source changes (e.g. switching to WSL).
-    public terminal: TerminalActivator,
-  ) {
+  constructor(private readonly hub: RuntimeHub) {
     super();
   }
 
   override onWillAppear(ev: WillAppearEvent<SlotSettings>): void {
-    this.#slots.set(ev.action.id, Number(ev.payload.settings.slotIndex ?? 0));
-    this.#displays.set(ev.action.id, ev.payload.settings.display ?? "project");
-    this.renderAll();
+    this.#apply(ev.action.id, ev.payload.settings);
   }
 
   override onDidReceiveSettings(ev: DidReceiveSettingsEvent<SlotSettings>): void {
-    this.#slots.set(ev.action.id, Number(ev.payload.settings.slotIndex ?? 0));
-    this.#displays.set(ev.action.id, ev.payload.settings.display ?? "project");
-    this.renderAll();
+    this.#apply(ev.action.id, ev.payload.settings);
   }
 
   override onWillDisappear(ev: WillDisappearEvent<SlotSettings>): void {
+    this.#sources.get(ev.action.id)?.off();
+    this.#sources.delete(ev.action.id);
     this.#slots.delete(ev.action.id);
     this.#displays.delete(ev.action.id);
   }
@@ -60,23 +54,25 @@ export class AgentSlotAction extends SingletonAction<SlotSettings> {
   override onKeyUp(ev: KeyUpEvent<SlotSettings>): void {
     const start = this.#pressStart.get(ev.action.id);
     this.#pressStart.delete(ev.action.id);
-    const index = Number(ev.payload.settings.slotIndex ?? 0);
-    const { agents, page } = this.store.getState();
+    const entry = this.#sources.get(ev.action.id);
+    if (!entry) return;
+    const index = this.#slots.get(ev.action.id) ?? 0;
+    const { agents, page } = entry.runtime.store.getState();
     const agent = pageSlice(agents, page, PAGE_SIZE)[index];
     if (!agent) return;
     const longPress = start !== undefined && Date.now() - start >= LONG_PRESS_MS;
     if (longPress) {
       // Long-press pins: the agent jumps to slot 1 (next pin beside it) and
       // stays visible even when idle. The store emit re-renders all keys.
-      this.store.togglePin(agent.paneId);
+      entry.runtime.store.togglePin(agent.paneId);
     } else {
-      void this.#focus(agent.paneId);
+      void this.#focus(entry.runtime, agent.paneId);
     }
   }
 
-  async #focus(paneId: string): Promise<void> {
+  async #focus(runtime: HerdrRuntime, paneId: string): Promise<void> {
     try {
-      await this.herdr.focus(paneId);
+      await runtime.client.focus(paneId);
     } catch (e) {
       streamDeck.logger.error(`focus failed: ${String(e)}`);
     }
@@ -84,31 +80,56 @@ export class AgentSlotAction extends SingletonAction<SlotSettings> {
     // the terminal was in the background. Independent of focus so a raise failure
     // never masks a successful pane switch.
     try {
-      await this.terminal.activate();
+      await runtime.terminal.activate();
     } catch (e) {
       streamDeck.logger.error(`raise terminal failed: ${String(e)}`);
     }
   }
 
-  // Flash the key currently showing this agent, if it is on the visible page.
+  // Point one key at the source its settings ask for, swapping the subscription
+  // when the key moves to another source.
+  #apply(actionId: string, settings: SlotSettings): void {
+    this.#slots.set(actionId, Number(settings.slotIndex ?? 0));
+    this.#displays.set(actionId, settings.display ?? "project");
+    const spec = sourceSpec(settings);
+    const key = sourceKey(spec);
+    const current = this.#sources.get(actionId);
+    if (current?.key === key) {
+      this.renderAll();
+      return;
+    }
+    current?.off();
+    const runtime = this.hub.get(spec);
+    const off = this.hub.subscribe(spec, (_state, flips) => {
+      for (const a of flips) this.flash(a.paneId);
+      this.renderAll();
+    });
+    this.#sources.set(actionId, { key, runtime, off });
+    this.renderAll();
+  }
+
+  // Flash the key currently showing this agent, on whichever source that key is
+  // pointed at.
   flash(paneId: string): void {
-    const { agents, page } = this.store.getState();
-    const visible = pageSlice(agents, page, PAGE_SIZE);
     this.actions.forEach((a) => {
       if (!a.isKey()) return;
+      const entry = this.#sources.get(a.id);
+      if (!entry) return;
+      const { agents, page } = entry.runtime.store.getState();
       const index = this.#slots.get(a.id) ?? 0;
-      if (visible[index]?.paneId === paneId) void a.showAlert();
+      if (pageSlice(agents, page, PAGE_SIZE)[index]?.paneId === paneId) void a.showAlert();
     });
   }
 
   renderAll(): void {
-    const { agents, page } = this.store.getState();
-    const visible = pageSlice(agents, page, PAGE_SIZE);
     this.actions.forEach((a) => {
       if (!a.isKey()) return;
+      const entry = this.#sources.get(a.id);
+      if (!entry) return;
+      const { agents, page } = entry.runtime.store.getState();
       const index = this.#slots.get(a.id) ?? 0;
       const display = this.#displays.get(a.id) ?? "project";
-      const agent = visible[index];
+      const agent = pageSlice(agents, page, PAGE_SIZE)[index];
       void a.setTitle("");
       void a.setImage(
         renderKeySvg(
@@ -117,7 +138,7 @@ export class AgentSlotAction extends SingletonAction<SlotSettings> {
                 label: labelFor(agent, agents, display),
                 status: agent.status,
                 agent: agent.name,
-                pinned: this.store.isPinned(agent.paneId),
+                pinned: entry.runtime.store.isPinned(agent.paneId),
               }
             : null,
         ),

@@ -3,72 +3,103 @@ import streamDeck, {
   action,
   SingletonAction,
   type WillAppearEvent,
+  type WillDisappearEvent,
+  type DidReceiveSettingsEvent,
   type KeyDownEvent,
 } from "@elgato/streamdeck";
-import type { AgentStore } from "../core/store";
-import type { HerdrClient } from "../herdr/client";
-import type { TerminalActivator } from "../os/terminal";
+import type { HerdrRuntime, RuntimeHub } from "../core/runtime";
+import { sourceKey, sourceSpec, type SourceSettings } from "../core/sources";
 import { pageCount, attentionAgents, worstAttention, PAGE_SIZE } from "../core/pagination";
 import { renderPagerSvg, renderAttentionSvg } from "../core/render";
 
-// One key, two modes. When any agent is blocked or done it acts as "jump to the
-// next agent needing attention" (focus + cycle on repeat presses); otherwise it
-// pages through the agent grid. The rendered icon shows which mode is active, so
-// a single key covers both jobs on the 6-key Mini.
+// One key, two modes. When any agent on that key's source is blocked or done it
+// acts as "jump to the next agent needing attention" (focus + cycle on repeat
+// presses); otherwise it pages through that source's agent grid. The rendered
+// icon shows which mode is active, so a single key covers both jobs on the 6-key
+// Mini.
 @action({ UUID: "dev.timvdhoorn.herdr-agents.pager" })
-export class PagerAction extends SingletonAction {
-  // paneId we last jumped to, so repeated presses cycle through attention agents.
-  #cursor: string | null = null;
+export class PagerAction extends SingletonAction<SourceSettings> {
+  // paneId we last jumped to per key, so repeated presses cycle through attention
+  // agents.
+  readonly #cursor = new Map<string, string>();
+  readonly #sources = new Map<string, { key: string; runtime: HerdrRuntime; off: () => void }>();
 
-  constructor(
-    private readonly store: AgentStore,
-    private readonly herdr: HerdrClient,
-    // Replaced when the herdr source changes (e.g. switching to WSL).
-    public terminal: TerminalActivator,
-  ) {
+  constructor(private readonly hub: RuntimeHub) {
     super();
   }
 
-  override onWillAppear(_ev: WillAppearEvent): void {
-    this.renderAll();
+  override onWillAppear(ev: WillAppearEvent<SourceSettings>): void {
+    this.#apply(ev.action.id, ev.payload.settings);
   }
 
-  override async onKeyDown(_ev: KeyDownEvent): Promise<void> {
-    const list = attentionAgents(this.store.getState().agents);
+  override onDidReceiveSettings(ev: DidReceiveSettingsEvent<SourceSettings>): void {
+    this.#apply(ev.action.id, ev.payload.settings);
+  }
+
+  override onWillDisappear(ev: WillDisappearEvent<SourceSettings>): void {
+    this.#sources.get(ev.action.id)?.off();
+    this.#sources.delete(ev.action.id);
+    this.#cursor.delete(ev.action.id);
+  }
+
+  override async onKeyDown(ev: KeyDownEvent<SourceSettings>): Promise<void> {
+    const entry = this.#sources.get(ev.action.id);
+    if (!entry) return;
+    const { store, client, terminal } = entry.runtime;
+    const list = attentionAgents(store.getState().agents);
     if (list.length === 0) {
-      this.store.nextPage();
+      store.nextPage();
       return;
     }
-    const at = list.findIndex((a) => a.paneId === this.#cursor);
-    const next = list[(at + 1) % list.length]; // at === -1 → starts at 0
-    this.#cursor = next.paneId;
+    const cursor = this.#cursor.get(ev.action.id);
+    const at = list.findIndex((a) => a.paneId === cursor);
+    const next = list[(at + 1) % list.length]; // at === -1 starts at 0
+    this.#cursor.set(ev.action.id, next.paneId);
     try {
-      await this.herdr.focus(next.paneId);
+      await client.focus(next.paneId);
     } catch (e) {
       streamDeck.logger.error(`attention focus failed: ${String(e)}`);
     }
     // Bring the host terminal forward too (no-op if already frontmost).
     try {
-      await this.terminal.activate();
+      await terminal.activate();
     } catch (e) {
       streamDeck.logger.error(`raise terminal failed: ${String(e)}`);
     }
   }
 
+  #apply(actionId: string, settings: SourceSettings): void {
+    const spec = sourceSpec(settings);
+    const key = sourceKey(spec);
+    const current = this.#sources.get(actionId);
+    if (current?.key === key) {
+      this.renderAll();
+      return;
+    }
+    current?.off();
+    const runtime = this.hub.get(spec);
+    const off = this.hub.subscribe(spec, () => this.renderAll());
+    this.#sources.set(actionId, { key, runtime, off });
+    this.renderAll();
+  }
+
   renderAll(): void {
-    const { agents, page } = this.store.getState();
-    const attention = attentionAgents(agents);
-    const svg =
-      attention.length > 0
-        ? renderAttentionSvg({ count: attention.length, attention: worstAttention(agents) })
-        : renderPagerSvg({
-            page,
-            total: pageCount(agents.length, PAGE_SIZE),
-            attention: null,
-            count: 0,
-          });
     this.actions.forEach((a) => {
-      if (a.isKey()) void a.setImage(svg);
+      if (!a.isKey()) return;
+      const entry = this.#sources.get(a.id);
+      if (!entry) return;
+      const { agents, page } = entry.runtime.store.getState();
+      const attention = attentionAgents(agents);
+      const svg =
+        attention.length > 0
+          ? renderAttentionSvg({ count: attention.length, attention: worstAttention(agents) })
+          : renderPagerSvg({
+              page,
+              total: pageCount(agents.length, PAGE_SIZE),
+              attention: null,
+              count: 0,
+            });
+      void a.setImage(svg);
     });
   }
 }

@@ -160,8 +160,8 @@ versions compatible.
 
 1. Open any **Agent Slot** key's Property Inspector.
 2. Set **SSH remote** to the target from step 1 (`me@agentbox`, or the
-   `agentbox` alias). These settings are global — set once, applies to every
-   key.
+   `agentbox` alias). The setting applies to that key; set it on every key that
+   should read that box.
 3. Leave **Remote socket** empty unless the remote herdr uses a non-default
    socket path (`~/.config/herdr/herdr.sock`).
 
@@ -226,9 +226,11 @@ version first) before falling back to `herdr.exe` on `PATH`.
 ## herdr inside WSL
 
 On Windows the plugin can read herdr from a WSL distro instead of this PC. Open
-any **Agent Slot** key's Property Inspector, set **herdr** to `WSL`, and put the
-distro name in **WSL distro** (`Ubuntu`; leave empty for the default distro).
-These settings are global — set once, applies to every key.
+any **Agent Slot** (or **Pager**) key's Property Inspector, set **herdr** to
+`WSL`, and put the distro name in **WSL distro** (`Ubuntu`; leave empty for the
+default distro). The setting belongs to that key, so one deck can show this PC on
+some keys and WSL on others — the keys share one poller per source, and nothing is
+merged (two herdr servers have their own pane ids).
 
 How it behaves:
 

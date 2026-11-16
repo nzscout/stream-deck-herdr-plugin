@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+  <head lang="en">
+    <meta charset="utf-8" />
+    <script src="sdpi-components.js"></script>
+  </head>
+  <body>
+    <!-- The pager pages and jumps within one herdr server; these pick which one
+         for this key. Same fields as an Agent Slot key, minus slot/display. -->
+    <sdpi-item label="herdr" data-windows-only>
+      <sdpi-select setting="source" default="local">
+        <option value="local">This PC (Windows)</option>
+        <option value="wsl">WSL</option>
+      </sdpi-select>
+    </sdpi-item>
+    <sdpi-item label="WSL distro" data-windows-only>
+      <sdpi-textfield
+        setting="wslDistro"
+        placeholder="Ubuntu (leave empty for the default distro)"
+      ></sdpi-textfield>
+    </sdpi-item>
+    <sdpi-item label="SSH remote" data-posix-only>
+      <sdpi-textfield
+        setting="sshTarget"
+        placeholder="user@host - leave empty for local herdr"
+      ></sdpi-textfield>
+    </sdpi-item>
+    <sdpi-item label="Remote socket" data-posix-only>
+      <sdpi-textfield
+        setting="remoteSocketPath"
+        placeholder="~/.config/herdr/herdr.sock (default)"
+      ></sdpi-textfield>
+    </sdpi-item>
+    <script>
+      var onWindows = navigator.userAgent.indexOf("Windows") !== -1;
+      document.querySelectorAll(onWindows ? "[data-posix-only]" : "[data-windows-only]").forEach(function (el) {
+        el.remove();
+      });
+    </script>
+  </body>
+</html>
