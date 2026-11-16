@@ -16,6 +16,7 @@ test("normalize maps fields and stable-sorts by workspace then pane", () => {
     workspaceId: "w5",
     focused: false,
     terminalTitle: "",
+    tabTitle: "",
   });
 });
 
@@ -92,20 +93,25 @@ test("normalize maps terminal_title_stripped to terminalTitle, empty when missin
   expect(agents.find((a) => a.paneId === "w1:p2")!.terminalTitle).toBe("");
 });
 
-test("labelFor title mode shows the terminal title", () => {
-  const a = { name: "claude", status: "working", cwd: "/x/proj", paneId: "w1:p1", workspaceId: "w1", focused: false, terminalTitle: "Fix login bug" } as const;
-  expect(labelFor(a, [a], "title")).toBe("Fix login bug");
+test("labelFor title mode shows the herdr tab label", () => {
+  const a = { name: "claude", status: "working", cwd: "/x/proj", paneId: "w1:p1", workspaceId: "w1", focused: false, terminalTitle: "OC | old title", tabTitle: "opencode stream" } as const;
+  expect(labelFor(a, [a], "title")).toBe("opencode stream");
+  // The terminal title is a separate, explicit choice.
+  expect(labelFor(a, [a], "terminal")).toBe("OC | old title");
+  // Without a tab label the terminal title stands in.
+  const noTab = { ...a, tabTitle: "" } as const;
+  expect(labelFor(noTab, [noTab], "title")).toBe("OC | old title");
 });
 
 test("labelFor title mode truncates long titles with an ellipsis", () => {
   const longTitle = "This is an extremely long terminal title that overflows";
-  const a = { name: "claude", status: "working", cwd: "/x/proj", paneId: "w1:p1", workspaceId: "w1", focused: false, terminalTitle: longTitle } as const;
+  const a = { name: "claude", status: "working", cwd: "/x/proj", paneId: "w1:p1", workspaceId: "w1", focused: false, terminalTitle: "", tabTitle: longTitle } as const;
   const label = labelFor(a, [a], "title");
   expect(label.length).toBeLessThanOrEqual(24);
   expect(label.endsWith("…")).toBe(true);
 });
 
-test("labelFor title mode falls back to project name when terminalTitle is empty", () => {
-  const a = { name: "claude", status: "working", cwd: "/x/myproj", paneId: "w1:p1", workspaceId: "w1", focused: false, terminalTitle: "" } as const;
+test("labelFor title mode falls back to the project name when nothing is titled", () => {
+  const a = { name: "claude", status: "working", cwd: "/x/myproj", paneId: "w1:p1", workspaceId: "w1", focused: false, terminalTitle: "", tabTitle: "" } as const;
   expect(labelFor(a, [a], "title")).toBe("myproj");
 });

@@ -9,6 +9,7 @@ export type RawAgent = {
   pane_id?: string;
   workspace_id?: string;
   tab_id?: string;
+  tab_label?: string;
   terminal_title_stripped?: string;
 };
 
@@ -20,6 +21,8 @@ export type Agent = {
   workspaceId: string;
   focused: boolean;
   terminalTitle: string;
+  // The label herdr shows in its own tab bar (what the TUI calls the tab).
+  tabTitle: string;
 };
 
 const KNOWN: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done", "unknown"]);
@@ -38,6 +41,7 @@ function toAgent(r: RawAgent): Agent | null {
     workspaceId: typeof r.workspace_id === "string" ? r.workspace_id : "",
     focused: r.focused === true,
     terminalTitle: typeof r.terminal_title_stripped === "string" ? r.terminal_title_stripped : "",
+    tabTitle: typeof r.tab_label === "string" ? r.tab_label : "",
   };
 }
 
@@ -79,7 +83,7 @@ function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
 
-export type DisplayMode = "project" | "title";
+export type DisplayMode = "project" | "title" | "terminal";
 
 export function labelFor(
   agent: Agent,
@@ -87,10 +91,20 @@ export function labelFor(
   display: DisplayMode = "project",
   max = 24,
 ): string {
+  // "title" is the tab/panel title: the label herdr shows in its own tab bar. The
+  // terminal title is a different string (opencode, for instance, keeps the OSC
+  // title at the session name while the herdr tab is named after the project), so
+  // "terminal" is offered separately.
   if (display === "title") {
+    const tab = (agent.tabTitle ?? "").trim();
+    if (tab) return truncate(tab, max);
     const title = agent.terminalTitle.trim();
     if (title) return truncate(title, max);
-    // No title available — fall through to the project-name label.
+    // Neither available - fall through to the project-name label.
+  }
+  if (display === "terminal") {
+    const title = agent.terminalTitle.trim();
+    if (title) return truncate(title, max);
   }
   const base = basename(agent.cwd) || agent.name;
   // Agents whose project name collides get a stable 1-based number (#1, #2, …),

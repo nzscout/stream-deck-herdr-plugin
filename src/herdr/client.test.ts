@@ -1,7 +1,7 @@
 // src/herdr/client.test.ts
 import { test, expect } from "bun:test";
 import path from "node:path";
-import { buildPath, createHerdrClient, herdrBinCandidates, resolveHerdrBin, type RunFn } from "./client";
+import { buildPath, createHerdrClient, herdrBinCandidates, mergeTabLabels, resolveHerdrBin, type RunFn } from "./client";
 import fixture from "../../tests/fixtures/agent-list.json";
 
 test("listAgents runs `herdr agent list` and returns the agents array", async () => {
@@ -72,4 +72,46 @@ test("win32 binary candidates prefer herdr's own install directories", () => {
   expect(candidates.some((c) => c.includes(".herdr") && c.endsWith("herdr.exe"))).toBe(true);
   expect(resolveHerdrBin("win32").length).toBeGreaterThan(0);
   expect(resolveHerdrBin("darwin")).toBe("herdr");
+});
+test("tab labels are merged onto agents by tab id", () => {
+  const agents = [
+    { agent: "x", pane_id: "w2:p1", tab_id: "w2:t1", workspace_id: "w2" },
+    { agent: "y", pane_id: "w2:p2", tab_id: "w2:t9", workspace_id: "w2" },
+  ];
+  const merged = mergeTabLabels(agents, [
+    { tab_id: "w2:t1", label: "opencode stream" },
+    { tab_id: "w2:t2", label: "other" },
+  ]);
+  expect(merged[0].tab_label).toBe("opencode stream");
+  // An agent whose tab has no label keeps no label (the label falls back later).
+  expect(merged[1].tab_label).toBeUndefined();
+  expect(agents[0].tab_label).toBeUndefined(); // input not mutated
+});
+
+test("listAgents joins `tab list` labels onto the agents", async () => {
+  const calls: string[][] = [];
+  const run: RunFn = async (_cmd, args) => {
+    calls.push(args);
+    if (args[0] === "tab") {
+      return JSON.stringify({ result: { tabs: [{ tab_id: "w2:t1", label: "opencode stream" }] } });
+    }
+    return JSON.stringify({
+      result: { agents: [{ agent: "x", pane_id: "w2:p1", tab_id: "w2:t1", agent_status: "working" }] },
+    });
+  };
+  const client = createHerdrClient({ run, bin: "herdr" });
+  const agents = await client.listAgents();
+  expect(agents[0].tab_label).toBe("opencode stream");
+  expect(calls.map((c) => c[0]).sort()).toEqual(["agent", "tab"]);
+});
+
+test("a missing `tab list` (older herdr) still returns agents", async () => {
+  const run: RunFn = async (_cmd, args) => {
+    if (args[0] === "tab") throw new Error("unknown subcommand");
+    return JSON.stringify({ result: { agents: [{ agent: "x", pane_id: "w2:p1", agent_status: "idle" }] } });
+  };
+  const client = createHerdrClient({ run, bin: "herdr" });
+  const agents = await client.listAgents();
+  expect(agents).toHaveLength(1);
+  expect(agents[0].tab_label).toBeUndefined();
 });

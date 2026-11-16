@@ -21,8 +21,8 @@ test("every call goes through a login shell so herdr is on PATH", () => {
 });
 
 test("the stream asks herdr once per interval, not once per poll", () => {
-  expect(streamCommand(1000)).toBe("while :; do herdr agent list; sleep 1; done");
-  expect(streamCommand(500)).toBe("while :; do herdr agent list; sleep 1; done");
+  expect(streamCommand(1000)).toBe("while :; do herdr agent list; herdr tab list; sleep 1; done");
+  expect(streamCommand(500)).toBe("while :; do herdr agent list; herdr tab list; sleep 1; done");
 });
 
 test("parseSnapshot accepts a herdr list line and ignores noise", () => {

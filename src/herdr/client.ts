@@ -105,6 +105,44 @@ const defaultRun: RunFn = (cmd, args, extraEnv) =>
 
 export type NotifyOpts = { body?: string; sound?: "none" | "done" | "request" };
 
+export type RawTab = { tab_id?: string; label?: string; number?: number };
+
+export function parseAgentList(stdout: string): RawAgent[] {
+  const parsed: unknown = JSON.parse(stdout);
+  const agents = (parsed as { result?: { agents?: unknown } })?.result?.agents;
+  if (!Array.isArray(agents)) throw new Error("unexpected `herdr agent list` shape");
+  return agents as RawAgent[];
+}
+
+// Tabs carry the label herdr shows in its own tab bar ("opencode stream"), which
+// is what the deck should mirror; the terminal title is a different thing.
+export function parseTabList(stdout: string): RawTab[] {
+  const parsed: unknown = JSON.parse(stdout);
+  const tabs = (parsed as { result?: { tabs?: unknown } })?.result?.tabs;
+  return Array.isArray(tabs) ? (tabs as RawTab[]) : [];
+}
+
+function safeTabs(stdout: string): RawTab[] {
+  try {
+    return parseTabList(stdout);
+  } catch {
+    return [];
+  }
+}
+
+// Join labels onto the agents by tab id. Agents whose tab has no label keep
+// their terminal title as the fallback.
+export function mergeTabLabels(agents: RawAgent[], tabs: RawTab[]): RawAgent[] {
+  const byTab = new Map<string, string>();
+  for (const tab of tabs) {
+    if (typeof tab.tab_id === "string" && typeof tab.label === "string") byTab.set(tab.tab_id, tab.label);
+  }
+  return agents.map((agent) => {
+    const label = typeof agent.tab_id === "string" ? byTab.get(agent.tab_id) : undefined;
+    return label === undefined ? agent : { ...agent, tab_label: label };
+  });
+}
+
 export type HerdrClient = {
   listAgents(): Promise<RawAgent[]>;
   focus(paneId: string): Promise<void>;
@@ -126,11 +164,17 @@ export function createHerdrClient(
   };
   return {
     async listAgents() {
-      const out = await run(bin, ["agent", "list"]);
-      const parsed: unknown = JSON.parse(out);
-      const agents = (parsed as { result?: { agents?: unknown } })?.result?.agents;
-      if (!Array.isArray(agents)) throw new Error("unexpected `herdr agent list` shape");
-      return agents as RawAgent[];
+      // Tab labels are a separate call, and the tab bar is what the deck mirrors.
+      // A herdr too old to know `tab list` still works: labels just stay empty and
+      // the label falls back to the terminal title.
+      const [agentsOut, tabsOut] = await Promise.allSettled([
+        run(bin, ["agent", "list"]),
+        run(bin, ["tab", "list"]),
+      ]);
+      if (agentsOut.status === "rejected") throw agentsOut.reason;
+      const agents = parseAgentList(agentsOut.value);
+      const tabs = tabsOut.status === "fulfilled" ? safeTabs(tabsOut.value) : [];
+      return mergeTabLabels(agents, tabs);
     },
     async focus(paneId) {
       await run(bin, ["agent", "focus", paneId]);

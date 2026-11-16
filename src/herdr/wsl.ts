@@ -1,7 +1,7 @@
 // src/herdr/wsl.ts
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import type { RawAgent } from "../core/agents";
-import type { HerdrClient, NotifyOpts } from "./client";
+import { mergeTabLabels, type HerdrClient, type NotifyOpts, type RawTab } from "./client";
 
 // herdr running inside WSL is reached through `wsl.exe`. Two details matter:
 //   - `~/.local/bin` is on PATH only for a login shell, so every call goes
@@ -31,6 +31,18 @@ export function isPaneId(value: string): boolean {
 
 // One `herdr agent list` line -> agents. Returns null for anything unparseable
 // so a stray shell banner or a half-written line cannot poison the snapshot.
+export function parseTabs(line: string): RawTab[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const tabs = (parsed as { result?: { tabs?: unknown } })?.result?.tabs;
+    return Array.isArray(tabs) ? (tabs as RawTab[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function parseSnapshot(line: string): RawAgent[] | null {
   const trimmed = line.trim();
   if (!trimmed.startsWith("{")) return null;
@@ -43,9 +55,11 @@ export function parseSnapshot(line: string): RawAgent[] | null {
   }
 }
 
+// Both lists per cycle: agents give status, tabs give the label herdr shows in
+// its tab bar. One long-lived shell keeps the cost to one wsl.exe.
 export function streamCommand(intervalMs: number): string {
   const seconds = Math.max(1, Math.round(intervalMs / 1000));
-  return `while :; do herdr agent list; sleep ${seconds}; done`;
+  return `while :; do herdr agent list; herdr tab list; sleep ${seconds}; done`;
 }
 
 const STALE_AFTER_MS = 15000;
@@ -78,6 +92,8 @@ export function createWslHerdrClient(
   let backoff = RESTART_MIN_MS;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   let latest: { raw: RawAgent[]; at: number } | null = null;
+  let latestAgents: RawAgent[] | null = null;
+  let latestTabs: RawTab[] = [];
   let waiters: Array<() => void> = [];
 
   const waitForSnapshot = (timeoutMs: number): Promise<void> =>
@@ -91,14 +107,26 @@ export function createWslHerdrClient(
       waiters.push(done);
     });
 
-  const onLine = (line: string): void => {
-    const raw = parseSnapshot(line);
-    if (!raw) return;
-    latest = { raw, at: Date.now() };
+  const publish = (): void => {
+    if (!latestAgents) return;
+    latest = { raw: mergeTabLabels(latestAgents, latestTabs), at: Date.now() };
     backoff = RESTART_MIN_MS;
     const pending = waiters;
     waiters = [];
     pending.forEach((fn) => fn());
+  };
+
+  const onLine = (line: string): void => {
+    const tabs = parseTabs(line);
+    if (tabs) {
+      latestTabs = tabs;
+      publish();
+      return;
+    }
+    const agents = parseSnapshot(line);
+    if (!agents) return;
+    latestAgents = agents;
+    publish();
   };
 
   const scheduleRestart = (): void => {
