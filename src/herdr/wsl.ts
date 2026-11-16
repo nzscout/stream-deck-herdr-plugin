@@ -1,7 +1,7 @@
 // src/herdr/wsl.ts
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import type { RawAgent } from "../core/agents";
-import { mergeTabLabels, type HerdrClient, type NotifyOpts, type RawTab } from "./client";
+import { mergeTabs, type HerdrClient, type NotifyOpts, type RawTab } from "./client";
 
 // herdr running inside WSL is reached through `wsl.exe`. Two details matter:
 //   - `~/.local/bin` is on PATH only for a login shell, so every call goes
@@ -109,7 +109,7 @@ export function createWslHerdrClient(
 
   const publish = (): void => {
     if (!latestAgents) return;
-    latest = { raw: mergeTabLabels(latestAgents, latestTabs), at: Date.now() };
+    latest = { raw: mergeTabs(latestAgents, latestTabs), at: Date.now() };
     backoff = RESTART_MIN_MS;
     const pending = waiters;
     waiters = [];

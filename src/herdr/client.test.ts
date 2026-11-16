@@ -1,7 +1,7 @@
 // src/herdr/client.test.ts
 import { test, expect } from "bun:test";
 import path from "node:path";
-import { buildPath, createHerdrClient, herdrBinCandidates, mergeTabLabels, resolveHerdrBin, type RunFn } from "./client";
+import { buildPath, createHerdrClient, herdrBinCandidates, mergeTabs, resolveHerdrBin, type RunFn } from "./client";
 import fixture from "../../tests/fixtures/agent-list.json";
 
 test("listAgents runs `herdr agent list` and returns the agents array", async () => {
@@ -78,7 +78,7 @@ test("tab labels are merged onto agents by tab id", () => {
     { agent: "x", pane_id: "w2:p1", tab_id: "w2:t1", workspace_id: "w2" },
     { agent: "y", pane_id: "w2:p2", tab_id: "w2:t9", workspace_id: "w2" },
   ];
-  const merged = mergeTabLabels(agents, [
+  const merged = mergeTabs(agents, [
     { tab_id: "w2:t1", label: "opencode stream" },
     { tab_id: "w2:t2", label: "other" },
   ]);
@@ -114,4 +114,17 @@ test("a missing `tab list` (older herdr) still returns agents", async () => {
   const agents = await client.listAgents();
   expect(agents).toHaveLength(1);
   expect(agents[0].tab_label).toBeUndefined();
+});
+
+test("tab numbers come from herdr so slot order matches the tab bar", () => {
+  const agents = [
+    // A window can assign p11 before p2 while the tabs are numbered 1 and 2.
+    { agent: "x", pane_id: "w2:p11", tab_id: "w2:t2", workspace_id: "w2" },
+    { agent: "y", pane_id: "w2:p2", tab_id: "w2:t1", workspace_id: "w2" },
+  ];
+  const merged = mergeTabs(agents, [
+    { tab_id: "w2:t1", label: "first", number: 1 },
+    { tab_id: "w2:t2", label: "second", number: 2 },
+  ]);
+  expect(merged.map((a) => a.tab_number)).toEqual([2, 1]);
 });

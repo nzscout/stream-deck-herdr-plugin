@@ -5,7 +5,7 @@ import fixture from "../../tests/fixtures/agent-list.json";
 
 const raw = fixture.result.agents as RawAgent[];
 
-test("normalize maps fields and stable-sorts by workspace then pane", () => {
+test("normalize maps fields and stable-sorts by workspace, tab number, then pane", () => {
   const agents = normalize(raw);
   expect(agents.map((a) => a.paneId)).toEqual(["w5:p1", "w7:p2", "wG:p1", "wJ:p1"]);
   expect(agents[0]).toEqual({
@@ -17,6 +17,7 @@ test("normalize maps fields and stable-sorts by workspace then pane", () => {
     focused: false,
     terminalTitle: "",
     tabTitle: "",
+    tabNumber: null,
   });
 });
 

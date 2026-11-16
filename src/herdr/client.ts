@@ -130,16 +130,22 @@ function safeTabs(stdout: string): RawTab[] {
   }
 }
 
-// Join labels onto the agents by tab id. Agents whose tab has no label keep
-// their terminal title as the fallback.
-export function mergeTabLabels(agents: RawAgent[], tabs: RawTab[]): RawAgent[] {
-  const byTab = new Map<string, string>();
+// Join tab metadata onto the agents by tab id: the label the deck shows, and the
+// tab number herdr orders its tab bar by (pane ids are opaque, so they are not a
+// stand-in for tab order).
+export function mergeTabs(agents: RawAgent[], tabs: RawTab[]): RawAgent[] {
+  const byTab = new Map<string, RawTab>();
   for (const tab of tabs) {
-    if (typeof tab.tab_id === "string" && typeof tab.label === "string") byTab.set(tab.tab_id, tab.label);
+    if (typeof tab.tab_id === "string") byTab.set(tab.tab_id, tab);
   }
   return agents.map((agent) => {
-    const label = typeof agent.tab_id === "string" ? byTab.get(agent.tab_id) : undefined;
-    return label === undefined ? agent : { ...agent, tab_label: label };
+    const tab = typeof agent.tab_id === "string" ? byTab.get(agent.tab_id) : undefined;
+    if (!tab) return agent;
+    return {
+      ...agent,
+      ...(typeof tab.label === "string" ? { tab_label: tab.label } : {}),
+      ...(typeof tab.number === "number" ? { tab_number: tab.number } : {}),
+    };
   });
 }
 
@@ -174,7 +180,7 @@ export function createHerdrClient(
       if (agentsOut.status === "rejected") throw agentsOut.reason;
       const agents = parseAgentList(agentsOut.value);
       const tabs = tabsOut.status === "fulfilled" ? safeTabs(tabsOut.value) : [];
-      return mergeTabLabels(agents, tabs);
+      return mergeTabs(agents, tabs);
     },
     async focus(paneId) {
       await run(bin, ["agent", "focus", paneId]);

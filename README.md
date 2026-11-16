@@ -118,8 +118,9 @@ your keys. The recommended 6-key Mini layout:
 - **Pager** — jumps to the next agent needing attention, or pages the grid when
   none do; it has the same per-key source settings.
 
-Each `slotIndex` belongs to one key: two keys with the same slot show the same
-agent.
+Slots follow herdr's own tab bar: tab 1 first, then tab 2, and so on (tabs are
+numbered by herdr, panes inside a tab keep pane order). Two keys with the same
+`slotIndex` show the same agent.
 
 Prefer a flat, no-paging layout? Place six **Agent Slot** keys (`slotIndex` 0–5)
 and skip the pager.

@@ -10,6 +10,7 @@ export type RawAgent = {
   workspace_id?: string;
   tab_id?: string;
   tab_label?: string;
+  tab_number?: number;
   terminal_title_stripped?: string;
 };
 
@@ -23,6 +24,9 @@ export type Agent = {
   terminalTitle: string;
   // The label herdr shows in its own tab bar (what the TUI calls the tab).
   tabTitle: string;
+  // Position of the agent tab in herdr tab bar; undefined when the herdr version
+  // has no tab list.
+  tabNumber: number | null;
 };
 
 const KNOWN: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done", "unknown"]);
@@ -42,6 +46,7 @@ function toAgent(r: RawAgent): Agent | null {
     focused: r.focused === true,
     terminalTitle: typeof r.terminal_title_stripped === "string" ? r.terminal_title_stripped : "",
     tabTitle: typeof r.tab_label === "string" ? r.tab_label : "",
+    tabNumber: typeof r.tab_number === "number" ? r.tab_number : null,
   };
 }
 
@@ -50,9 +55,15 @@ export function normalize(raw: RawAgent[]): Agent[] {
     .map(toAgent)
     .filter((a): a is Agent => a !== null)
     .slice()
+    // Order must match herdr's tab bar, which is ordered by tab number, not by
+    // pane id: ids are opaque handles and do not follow tabs around (windows have
+    // p11 before p2, and tabs can be reordered). Agents whose tab number is
+    // unknown sort after the numbered ones, then by pane id for stability.
     .sort(
       (a, b) =>
-        a.workspaceId.localeCompare(b.workspaceId) || a.paneId.localeCompare(b.paneId),
+        a.workspaceId.localeCompare(b.workspaceId) ||
+        (a.tabNumber ?? Number.MAX_SAFE_INTEGER) - (b.tabNumber ?? Number.MAX_SAFE_INTEGER) ||
+        a.paneId.localeCompare(b.paneId),
     );
 }
 
