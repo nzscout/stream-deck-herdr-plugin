@@ -26,29 +26,86 @@ export const DEFAULT_WINDOWS_TERMINAL_APPS = [
   "conhost",
 ];
 
+// Windows Terminal's top-level window class. A single WindowsTerminal.exe can own
+// several windows, so the raise must enumerate them instead of trusting
+// MainWindowHandle (which returns one arbitrary window of the process).
+const WT_WINDOW_CLASS = "CASCADIA_HOSTING_WINDOW_CLASS";
+
 const RAISE_TIMEOUT_MS = 4000;
+
+export type RaiseHints = {
+  // Substring of the terminal window title to raise. Empty = the detected window.
+  window?: string;
+  // Terminal tab to select after raising (1-9). 0/undefined = leave the tab alone.
+  tab?: number;
+};
 
 const WIN32_PRELUDE = `$ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
+
 public class HerdrDeckWindow {
+  private delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] private static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+  // Every visible top-level window of one process, optionally only a given class.
+  public static IntPtr[] TopLevel(uint processId, string className) {
+    var found = new List<IntPtr>();
+    EnumWindows(delegate(IntPtr hWnd, IntPtr lParam) {
+      uint pid;
+      GetWindowThreadProcessId(hWnd, out pid);
+      if (pid != processId || !IsWindowVisible(hWnd)) return true;
+      if (className != null) {
+        var cls = new StringBuilder(256);
+        GetClassName(hWnd, cls, 256);
+        if (cls.ToString() != className) return true;
+      }
+      found.Add(hWnd);
+      return true;
+    }, IntPtr.Zero);
+    return found.ToArray();
+  }
+
+  public static string Title(IntPtr hWnd) {
+    var text = new StringBuilder(512);
+    GetWindowText(hWnd, text, 512);
+    return text.ToString();
+  }
 }
 '@
 
 $script:HerdrDeckCached = $null
 $script:HerdrDeckDistro = '__HERDR_DECK_DISTRO__'
 
-# The terminal that hosts herdr is the first ancestor of a herdr process that
-# owns a top-level window: herdr runs as a TUI inside a shell inside the terminal
-# app, so the window belongs to a parent, never to herdr itself. herdr on Windows
-# is herdr.exe; herdr inside WSL has no herdr.exe, so the wsl.exe of that distro
-# is the seed instead (its parent chain leads to the same terminal window).
-function Get-HerdrDeckWindowFromHost {
+function Get-HerdrDeckTitle([IntPtr] $Handle) { return [HerdrDeckWindow]::Title($Handle) }
+
+# Every window of a process, preferring real terminal windows over dialogs.
+function Get-HerdrDeckProcessWindows([int] $ProcessId) {
+  $found = @([HerdrDeckWindow]::TopLevel([uint32]$ProcessId, '${WT_WINDOW_CLASS}'))
+  if ($found.Count -eq 0) { $found = @([HerdrDeckWindow]::TopLevel([uint32]$ProcessId, $null)) }
+  return $found
+}
+
+# The terminal that hosts herdr is the first ancestor of a herdr process that owns
+# a window: herdr runs as a TUI inside a shell inside the terminal app, so the
+# window belongs to a parent, never to herdr itself. herdr on Windows is
+# herdr.exe; herdr inside WSL has no herdr.exe, so the wsl.exe of that distro is
+# the seed instead (its parent chain leads to the same terminal).
+function Get-HerdrDeckHostProcesses {
   $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
   $byId = @{}
   foreach ($p in $procs) { $byId[[int]$p.ProcessId] = $p }
@@ -56,50 +113,72 @@ function Get-HerdrDeckWindowFromHost {
   $seeds += @($procs | Where-Object {
     $_.Name -eq 'wsl.exe' -and ($script:HerdrDeckDistro -eq '' -or $_.CommandLine -like "*$script:HerdrDeckDistro*")
   })
-  foreach ($h in $seeds) {
-    $cur = $h
+  $hosts = New-Object System.Collections.Generic.List[object]
+  foreach ($seed in $seeds) {
+    $cur = $seed
     for ($i = 0; $i -lt 8 -and $null -ne $cur; $i++) {
-      $owner = Get-Process -Id $cur.ProcessId -ErrorAction SilentlyContinue
-      if ($owner -and $owner.MainWindowHandle -ne 0) { return $owner }
+      $windows = @(Get-HerdrDeckProcessWindows ([int]$cur.ProcessId))
+      if ($windows.Count -gt 0) {
+        $hosts.Add([pscustomobject]@{ ProcessId = [int]$cur.ProcessId; Windows = $windows })
+        break
+      }
       $cur = $byId[[int]$cur.ParentProcessId]
     }
   }
-  return $null
+  return $hosts
 }
 
-function Get-HerdrDeckWindowByName([string[]] $Names) {
-  foreach ($name in $Names) {
-    $p = Get-Process -Name $name -ErrorAction SilentlyContinue |
-      Where-Object { $_.MainWindowHandle -ne 0 } |
-      Select-Object -First 1
-    if ($p) { return $p }
+# Pick one window. A title hint matches against the windows of the known terminal
+# apps directly (fast, no process-tree scan); without a hint the host is found by
+# walking up from herdr.exe / wsl.exe and then cached, because that scan costs most
+# of a second.
+function Find-HerdrDeckHandle([string] $WindowHint) {
+  if ($script:HerdrDeckCached -and $script:HerdrDeckCached.Hint -eq $WindowHint) {
+    if ([HerdrDeckWindow]::IsWindow([IntPtr]$script:HerdrDeckCached.Handle)) { return [IntPtr]$script:HerdrDeckCached.Handle }
+    $script:HerdrDeckCached = $null
   }
-  return $null
-}
 
-# Scanning every process costs most of a second, and the terminal that hosts
-# herdr does not move while it is open, so remember the window and only look
-# again once it is gone (terminal closed or restarted).
-function Test-HerdrDeckCached {
-  if ($null -eq $script:HerdrDeckCached) { return $false }
-  $p = Get-Process -Id $script:HerdrDeckCached.Pid -ErrorAction SilentlyContinue
-  return ($null -ne $p -and $p.MainWindowHandle -ne 0 -and $p.MainWindowHandle -eq $script:HerdrDeckCached.Handle)
-}
-
-function Find-HerdrDeckHandle([string[]] $Names) {
-  if ($Names.Count -eq 0 -and (Test-HerdrDeckCached)) { return [IntPtr]$script:HerdrDeckCached.Handle }
-  $target = $null
-  if ($Names.Count -eq 0) {
-    $target = Get-HerdrDeckWindowFromHost
-    if ($null -eq $target) { $target = Get-HerdrDeckWindowByName @(__HERDR_DECK_FALLBACK__) }
+  $candidates = @()
+  if ($WindowHint) {
+    # Every window of the known terminal apps, so a hint can pick one of several.
+    foreach ($name in __HERDR_DECK_FALLBACK__) {
+      foreach ($p in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+        foreach ($w in @(Get-HerdrDeckProcessWindows ([int]$p.Id))) {
+          $candidates += [pscustomobject]@{ ProcessId = [int]$p.Id; Handle = $w }
+        }
+      }
+    }
   } else {
-    $target = Get-HerdrDeckWindowByName $Names
+    $hosts = @(Get-HerdrDeckHostProcesses)
+    if ($hosts.Count -eq 0) {
+      foreach ($name in __HERDR_DECK_FALLBACK__) {
+        $p = Get-Process -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($p) { $hosts += [pscustomobject]@{ ProcessId = [int]$p.Id; Windows = @(Get-HerdrDeckProcessWindows ([int]$p.Id)) } }
+      }
+    }
+    foreach ($hostProc in $hosts) {
+      foreach ($w in $hostProc.Windows) {
+        $candidates += [pscustomobject]@{ ProcessId = $hostProc.ProcessId; Handle = $w }
+      }
+    }
   }
-  if ($null -eq $target) { throw 'no terminal window found' }
-  if ($Names.Count -eq 0) {
-    $script:HerdrDeckCached = [pscustomobject]@{ Pid = $target.Id; Handle = $target.MainWindowHandle }
+  if ($candidates.Count -eq 0) { throw 'no terminal window found' }
+
+  $chosen = $null
+  if ($WindowHint) {
+    $chosen = $candidates | Where-Object { (Get-HerdrDeckTitle $_.Handle).IndexOf($WindowHint, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | Select-Object -First 1
+    # A title hint can go stale (the title follows the active tab), so a miss falls
+    # back to the detected host window instead of failing the press.
+    if ($null -eq $chosen) {
+      $hosts = @(Get-HerdrDeckHostProcesses)
+      foreach ($hostProc in $hosts) { foreach ($w in $hostProc.Windows) { $candidates += [pscustomobject]@{ ProcessId = $hostProc.ProcessId; Handle = $w } } }
+      $chosen = $candidates | Select-Object -First 1
+    }
+  } else {
+    $chosen = $candidates | Select-Object -First 1
   }
-  return [IntPtr]$target.MainWindowHandle
+  $script:HerdrDeckCached = [pscustomobject]@{ Pid = $chosen.ProcessId; Handle = $chosen.Handle; Hint = $WindowHint }
+  return [IntPtr]$chosen.Handle
 }
 
 # Windows refuses SetForegroundWindow from a process that did not receive the
@@ -109,38 +188,61 @@ function Show-HerdrDeckWindow([IntPtr] $Handle) {
   [HerdrDeckWindow]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
   [HerdrDeckWindow]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 60
-  [void][HerdrDeckWindow]::ShowWindow($Handle, 9)
+  # SW_RESTORE also undoes a maximized window, which would resize the user window
+  # on every press, so it is only used for a minimized one.
+  if ([HerdrDeckWindow]::IsIconic($Handle)) { [void][HerdrDeckWindow]::ShowWindow($Handle, 9) }
   [void][HerdrDeckWindow]::BringWindowToTop($Handle)
   [void][HerdrDeckWindow]::SetForegroundWindow($Handle)
 }
 
-function Invoke-HerdrDeckRaise([string[]] $Names) {
-  $handle = Find-HerdrDeckHandle $Names
+# Windows Terminal switches tabs on Ctrl+Alt+<1..9>; herdr runs in one tab of the
+# window, so selecting that tab is what actually puts the pane on screen.
+function Select-HerdrDeckTab([int] $Tab) {
+  if ($Tab -lt 1 -or $Tab -gt 9) { return }
+  $vk = [byte](0x30 + $Tab)
+  [HerdrDeckWindow]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+  [HerdrDeckWindow]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
+  [HerdrDeckWindow]::keybd_event($vk, 0, 0, [UIntPtr]::Zero)
+  [HerdrDeckWindow]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)
+  [HerdrDeckWindow]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+  [HerdrDeckWindow]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
+}
+
+function Invoke-HerdrDeckRaise([string] $WindowHint, [int] $Tab) {
+  $handle = Find-HerdrDeckHandle $WindowHint
   Show-HerdrDeckWindow -Handle $handle
+  if ($Tab -gt 0) {
+    Start-Sleep -Milliseconds 80
+    Select-HerdrDeckTab $Tab
+  }
 }`;
 
+// The distro is matched against wsl.exe command lines, so it is spliced into a
+// single-quoted PowerShell string (quotes doubled) and never evaluated.
 function psStringList(names: string[]): string {
   return `@(${names.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ")})`;
 }
 
-// The distro is matched against wsl.exe command lines, so it is spliced into a
-// single-quoted PowerShell string (quotes doubled) and never evaluated.
-function fillPrelude(fallback: string[], distro: string): string {
-  return WIN32_PRELUDE.replace("__HERDR_DECK_FALLBACK__", psStringList(fallback)).replace(
-    "__HERDR_DECK_DISTRO__",
-    distro.replace(/'/g, "''"),
+function fillPrelude(distro: string, apps: string[] = []): string {
+  // WT_WINDOW_CLASS is interpolated when WIN32_PRELUDE is built.
+  const fallback = apps.length > 0 ? apps : DEFAULT_WINDOWS_TERMINAL_APPS;
+  return WIN32_PRELUDE.replace("__HERDR_DECK_DISTRO__", distro.replace(/'/g, "''")).replace(
+    "__HERDR_DECK_FALLBACK__",
+    psStringList(fallback),
   );
 }
 
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 // One-shot variant: raise, print "ok", exit.
-export function windowsRaiseScript(names: string[] = [], distro = ""): string {
-  const fallback = names.length > 0 ? names : DEFAULT_WINDOWS_TERMINAL_APPS;
-  const prelude = fillPrelude(fallback, distro);
-  const requested = names.length > 0 ? psStringList(names) : psStringList([]);
+export function windowsRaiseScript(hints: RaiseHints = {}, distro = "", apps: string[] = []): string {
+  const prelude = fillPrelude(distro, apps);
   return `${prelude}
 
 try {
-  Invoke-HerdrDeckRaise ${requested}
+  Invoke-HerdrDeckRaise -WindowHint ${psQuote(hints.window ?? "")} -Tab ${Number(hints.tab ?? 0)}
   Write-Output 'ok'
 } catch {
   Write-Output ('err:' + $_.Exception.Message)
@@ -149,13 +251,13 @@ try {
 
 // Long-lived variant: compile the Win32 helper once, then serve one command per
 // stdin line: "detect" populates the window cache without raising anything (used
-// to pre-warm), "raise" / "raise:<names>" raises. Each command answers one
+// to pre-warm), "raise" raises the detected window, "raise {json}" raises the
+// window matching "window" and then selects tab "tab". Each command answers one
 // stdout line: "warm", "ok" or "err:<message>". Spawning PowerShell per key press
 // costs about 750 ms (process start plus Add-Type); the worker makes every press
 // after the first effectively instant.
-export function windowsWorkerScript(names: string[] = [], distro = ""): string {
-  const fallback = names.length > 0 ? names : DEFAULT_WINDOWS_TERMINAL_APPS;
-  const prelude = fillPrelude(fallback, distro);
+export function windowsWorkerScript(distro = "", apps: string[] = []): string {
+  const prelude = fillPrelude(distro, apps);
   return `${prelude}
 
 while ($true) {
@@ -163,14 +265,18 @@ while ($true) {
   if ($null -eq $line) { break }
   try {
     if ($line -eq 'detect') {
-      [void](Find-HerdrDeckHandle @())
+      [void](Find-HerdrDeckHandle '')
       [Console]::Out.WriteLine('warm')
-    } elseif ($line -eq 'raise' -or $line.StartsWith('raise:')) {
-      $names = @()
-      if ($line.Length -gt 6) {
-        $names = @($line.Substring(6) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    } elseif ($line.StartsWith('raise')) {
+      $windowHint = ''
+      $tab = 0
+      $rest = $line.Substring(5).Trim()
+      if ($rest.Length -gt 0) {
+        $opts = $rest | ConvertFrom-Json
+        if ($null -ne $opts.window) { $windowHint = [string]$opts.window }
+        if ($null -ne $opts.tab) { $tab = [int]$opts.tab }
       }
-      Invoke-HerdrDeckRaise $names
+      Invoke-HerdrDeckRaise -WindowHint $windowHint -Tab $tab
       [Console]::Out.WriteLine('ok')
     } else {
       [Console]::Out.WriteLine('err:unknown command')
@@ -214,7 +320,7 @@ function parseApps(app: string | undefined): string[] {
 }
 
 export type TerminalActivator = {
-  activate(): Promise<void>;
+  activate(hints?: RaiseHints): Promise<void>;
   // Pay one-time start-up cost ahead of the first press (no-op where cheap).
   warm(): void;
   dispose(): void;
@@ -246,8 +352,8 @@ function macActivator(app: string, run: RunFn): TerminalActivator {
 // Persistent PowerShell worker: first activate() pays the ~750 ms start-up, every
 // later press is one stdin line. A crashed worker is respawned on the next
 // press; a press that never gets an answer fails instead of hanging.
-function windowsWorkerActivator(names: string[], distro: string): TerminalActivator {
-  const script = windowsWorkerScript(names, distro);
+function windowsWorkerActivator(distro: string, apps: string[]): TerminalActivator {
+  const script = windowsWorkerScript(distro, apps);
   const args = ["-NoProfile", "-NonInteractive", "-NoLogo", "-EncodedCommand", encodedCommand(script)];
   let child: ChildProcessWithoutNullStreams | null = null;
   let buffer = "";
@@ -298,8 +404,15 @@ function windowsWorkerActivator(names: string[], distro: string): TerminalActiva
     return proc;
   };
 
+  const command = (hints: RaiseHints): string => {
+    const payload: { window?: string; tab?: number } = {};
+    if (hints.window) payload.window = hints.window;
+    if (hints.tab) payload.tab = hints.tab;
+    return Object.keys(payload).length > 0 ? `raise ${JSON.stringify(payload)}` : "raise";
+  };
+
   return {
-    activate() {
+    activate(hints = {}) {
       return new Promise<void>((resolve, reject) => {
         let proc: ChildProcessWithoutNullStreams;
         try {
@@ -313,7 +426,7 @@ function windowsWorkerActivator(names: string[], distro: string): TerminalActiva
           reject(new Error("raise terminal timed out"));
         }, RAISE_TIMEOUT_MS);
         waiters.push({ resolve, reject, timer });
-        proc.stdin.write(names.length > 0 ? `raise:${names.join(",")}\n` : "raise\n");
+        proc.stdin.write(`${command(hints)}\n`);
       });
     },
     warm() {
@@ -341,28 +454,29 @@ export function createTerminalActivator(
 ): TerminalActivator {
   const platform = opts.platform ?? process.platform;
   if (platform === "win32") {
-    const names = parseApps(opts.app);
+    // `app` is a fallback list of process names when the process walk finds
+    // nothing; the per-press hints name a window title instead.
+    const apps = parseApps(opts.app);
     if (opts.run) {
       // Injected run (tests / callers that manage the process themselves): pay
       // the one-shot cost instead of owning a worker.
       return {
-        async activate() {
+        async activate(hints = {}) {
           await opts.run?.(resolvePowershell(), [
             "-NoProfile",
             "-NonInteractive",
             "-NoLogo",
             "-EncodedCommand",
-            encodedCommand(windowsRaiseScript(names, opts.distro ?? "")),
+            encodedCommand(windowsRaiseScript(hints, opts.distro ?? "", apps)),
           ]);
         },
         warm() {},
         dispose() {},
       };
     }
-    const activator = windowsWorkerActivator(names, opts.distro ?? "");
+    const activator = windowsWorkerActivator(opts.distro ?? "", apps);
     activator.warm();
     return activator;
   }
   return macActivator(opts.app ?? DEFAULT_TERMINAL_APP, opts.run ?? defaultRun);
 }
-

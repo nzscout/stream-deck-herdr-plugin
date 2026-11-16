@@ -237,7 +237,22 @@ the terminal that owns a visible window — Windows Terminal, Orca, WezTerm,
 Alacritty, or whatever else hosts it — and raises that window. Windows refuses
 `SetForegroundWindow` from a process that did not receive the last input event,
 so the plugin taps Alt first, which is what makes the raise work from a Stream
-Deck press.
+Deck press. A minimized window is restored; a maximized one is left at its size.
+
+**Several windows or tabs?** One `WindowsTerminal.exe` can own several windows,
+and herdr itself may live in one tab of a window, so two per-key fields pin the
+target exactly:
+
+- **Window title** — part of the title of the window to raise (case-insensitive),
+  e.g. `pwsh in igore`. Empty = the window detected from herdr's process. If the
+  hint matches nothing (titles follow the active tab and can change), the press
+  falls back to the detected window instead of failing.
+- **Terminal tab** — `1`–`9`; after raising, the plugin sends Windows Terminal's
+  `Ctrl+Alt+<n>` to select that tab, which is what actually puts herdr on screen
+  when you were looking at another tab.
+
+Tab selection depends on Windows Terminal's default `switchToTab` binding
+(`Ctrl+Alt+1`…`Ctrl+Alt+9`); if you rebound those keys, leave the field empty.
 
 To raise one specific terminal instead of the detected one, set
 `HERDR_DECK_TERMINAL_APP` to its process name (comma-separated for a preference
@@ -325,6 +340,13 @@ This fork (`nzscout/stream-deck-herdr-plugin`) on top of upstream 0.2.0:
   herdr's tab bar), with `Terminal title` kept as an explicit mode.
 - **0.7.0 — Tab-ordered slots.** Slots sort by herdr's tab number instead of the
   opaque pane id, so the deck order matches the tab bar.
+- **0.7.1 — Maximized windows stay maximized.** The raise only restores a window
+  that is minimized; `SW_RESTORE` used to undo maximize on every press.
+- **0.8.0 — Window and tab targeting.** The raise enumerates every window of the
+  terminal process instead of trusting `MainWindowHandle` (one
+  `WindowsTerminal.exe` can own several windows, which is why a press sometimes
+  did nothing), and two per-key fields pick the window by title and the tab by
+  number.
 
 ## License
 

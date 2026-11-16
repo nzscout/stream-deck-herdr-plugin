@@ -17,8 +17,14 @@ import { renderPagerSvg, renderAttentionSvg } from "../core/render";
 // presses); otherwise it pages through that source's agent grid. The rendered
 // icon shows which mode is active, so a single key covers both jobs on the 6-key
 // Mini.
+type PagerSettings = SourceSettings & {
+  // Windows: which terminal window/tab shows the agent. Empty = detected window.
+  termWindow?: string;
+  termTab?: number | string;
+};
+
 @action({ UUID: "dev.timvdhoorn.herdr-agents.pager" })
-export class PagerAction extends SingletonAction<SourceSettings> {
+export class PagerAction extends SingletonAction<PagerSettings> {
   // paneId we last jumped to per key, so repeated presses cycle through attention
   // agents.
   readonly #cursor = new Map<string, string>();
@@ -28,21 +34,21 @@ export class PagerAction extends SingletonAction<SourceSettings> {
     super();
   }
 
-  override onWillAppear(ev: WillAppearEvent<SourceSettings>): void {
+  override onWillAppear(ev: WillAppearEvent<PagerSettings>): void {
     this.#apply(ev.action.id, ev.payload.settings);
   }
 
-  override onDidReceiveSettings(ev: DidReceiveSettingsEvent<SourceSettings>): void {
+  override onDidReceiveSettings(ev: DidReceiveSettingsEvent<PagerSettings>): void {
     this.#apply(ev.action.id, ev.payload.settings);
   }
 
-  override onWillDisappear(ev: WillDisappearEvent<SourceSettings>): void {
+  override onWillDisappear(ev: WillDisappearEvent<PagerSettings>): void {
     this.#sources.get(ev.action.id)?.off();
     this.#sources.delete(ev.action.id);
     this.#cursor.delete(ev.action.id);
   }
 
-  override async onKeyDown(ev: KeyDownEvent<SourceSettings>): Promise<void> {
+  override async onKeyDown(ev: KeyDownEvent<PagerSettings>): Promise<void> {
     const entry = this.#sources.get(ev.action.id);
     if (!entry) return;
     const { store, client, terminal } = entry.runtime;
@@ -62,7 +68,10 @@ export class PagerAction extends SingletonAction<SourceSettings> {
     }
     // Bring the host terminal forward too (no-op if already frontmost).
     try {
-      await terminal.activate();
+      await terminal.activate({
+        window: ev.payload.settings.termWindow,
+        tab: Number(ev.payload.settings.termTab ?? 0) || 0,
+      });
     } catch (e) {
       streamDeck.logger.error(`raise terminal failed: ${String(e)}`);
     }

@@ -14,7 +14,14 @@ import { pageSlice, PAGE_SIZE } from "../core/pagination";
 import { labelFor, type DisplayMode } from "../core/agents";
 import { renderKeySvg } from "../core/render";
 
-type SlotSettings = SourceSettings & { slotIndex?: number; display?: DisplayMode };
+type SlotSettings = SourceSettings & {
+  slotIndex?: number;
+  display?: DisplayMode;
+  // Windows: which terminal window/tab shows the agent. Empty = detected window,
+  // and the tab that happens to be active.
+  termWindow?: string;
+  termTab?: number | string;
+};
 
 // Press-length threshold: below this a key press focuses the agent, at/above it
 // the press toggles a pin.
@@ -66,11 +73,11 @@ export class AgentSlotAction extends SingletonAction<SlotSettings> {
       // stays visible even when idle. The store emit re-renders all keys.
       entry.runtime.store.togglePin(agent.paneId);
     } else {
-      void this.#focus(entry.runtime, agent.paneId);
+      void this.#focus(entry.runtime, agent.paneId, ev.payload.settings);
     }
   }
 
-  async #focus(runtime: HerdrRuntime, paneId: string): Promise<void> {
+  async #focus(runtime: HerdrRuntime, paneId: string, settings: SlotSettings): Promise<void> {
     try {
       await runtime.client.focus(paneId);
     } catch (e) {
@@ -80,7 +87,10 @@ export class AgentSlotAction extends SingletonAction<SlotSettings> {
     // the terminal was in the background. Independent of focus so a raise failure
     // never masks a successful pane switch.
     try {
-      await runtime.terminal.activate();
+      await runtime.terminal.activate({
+        window: settings.termWindow,
+        tab: Number(settings.termTab ?? 0) || 0,
+      });
     } catch (e) {
       streamDeck.logger.error(`raise terminal failed: ${String(e)}`);
     }

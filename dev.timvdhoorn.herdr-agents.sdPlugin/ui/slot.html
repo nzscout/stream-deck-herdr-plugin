@@ -56,12 +56,24 @@
         "ok". See README &rsaquo; Remote herdr over SSH.
       </p>
     </sdpi-item>
+    <sdpi-item label="Window title" data-windows-only>
+      <sdpi-textfield
+        setting="termWindow"
+        placeholder="part of the terminal window title (empty = detected)"
+      ></sdpi-textfield>
+    </sdpi-item>
+    <sdpi-item label="Terminal tab" data-windows-only>
+      <sdpi-textfield
+        setting="termTab"
+        placeholder="1-9 (empty = leave the active tab)"
+      ></sdpi-textfield>
+    </sdpi-item>
     <sdpi-item label="Terminal" data-windows-only>
       <p style="margin: 0; font-size: 8pt; color: #969696">
-        A key press raises the terminal that hosts herdr - the WSL distro's
-        window when this key reads WSL. Set
-        <code>HERDR_DECK_TERMINAL_APP</code> (e.g.
-        <code>WindowsTerminal</code>) to override the detected one.
+        A press raises the terminal hosting herdr; Windows Terminal can own several
+        windows, so name one here if the wrong window comes up. The tab is selected
+        with <code>Ctrl+Alt+&lt;n&gt;</code>. Set
+        <code>HERDR_DECK_TERMINAL_APP</code> to override the detected host app.
       </p>
     </sdpi-item>
     <script>
