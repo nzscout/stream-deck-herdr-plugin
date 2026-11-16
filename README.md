@@ -31,9 +31,13 @@ agent that's waiting on you.
   when you're not looking at the deck.
 - **Stable slots.** Every live agent keeps its key while its pane exists, so
   keys never reshuffle when an agent starts or finishes work — an idle agent
-  shows grey `○` in place instead of vanishing.
-- **Instant updates.** Refreshes on herdr socket events (push), with a slow
-  safety-net poll as a backstop — no busy 1-second polling.
+  shows grey `○` in place instead of vanishing. Slots follow herdr's tab bar:
+  tab 1 first, then tab 2, and so on.
+- **One source per key.** A key reads this PC, any WSL distro, or (macOS/Linux)
+  a remote box over SSH. Keys on the same source share one poller; different
+  servers are never merged.
+- **Updates every second.** herdr socket events push on macOS/Linux; Windows
+  cannot open herdr's AF_UNIX socket, so it polls once a second instead.
 
 ## Status → key
 
@@ -46,6 +50,13 @@ agent that's waiting on you.
 | unknown  | near-black | ·     | —                  |
 | empty    | black      |       | no agent in slot   |
 
+`done` is short-lived by design: it means "finished and not yet seen", so herdr
+clears it to `idle` as soon as you look at that pane, click its tab, or press its
+key. A busy pane therefore reads orange, and drops back to grey when its turn
+ends. Green `✓` is what a **background** tab shows after its agent finishes —
+until you switch to it. Grey is the resting state of an idle agent, not a
+missed update.
+
 ## Tested on
 
 - **Stream Deck Mini** (6 keys)
@@ -53,11 +64,13 @@ agent that's waiting on you.
 - Elgato Stream Deck app **7.4.2**
 - **herdr 0.8.0**
 
-Windows was added in 0.3.0 and verified on:
+Windows support was added in 0.3.0 and has been verified on:
 
 - **Stream Deck** (keypad) on Windows 11
-- Elgato Stream Deck app **7.6.1**
+- Elgato Stream Deck app **7.6.1** (bundled Node 24)
 - **herdr 0.9.5**, Windows Terminal
+- **WSL**: herdr 0.9.5 inside Ubuntu (WSL 2), raised through the same Windows
+  Terminal window
 
 The plugin is keypad-only and works on any Stream Deck model with keys. The
 default layout assumes the 6-key Mini, but you can place the two actions on a
@@ -67,7 +80,9 @@ deck of any size.
 
 - macOS 12 or newer, or Windows 10 or newer
 - [Elgato Stream Deck](https://www.elgato.com/stream-deck) app 7.1+
-- [herdr](https://herdr.dev) 0.8.0+ installed and running (`herdr` on your `PATH`)
+- [herdr](https://herdr.dev) 0.8.0+ installed and running (`herdr` on your `PATH`);
+  **0.9.0+** for tab titles and tab-ordered slots (older versions fall back to
+  the terminal title and pane order)
 - To build from source: [Bun](https://bun.sh) and Node.js 24
 
 ## Install
@@ -119,8 +134,10 @@ your keys. The recommended 6-key Mini layout:
   none do; it has the same per-key source settings.
 
 Slots follow herdr's own tab bar: tab 1 first, then tab 2, and so on (tabs are
-numbered by herdr, panes inside a tab keep pane order). Two keys with the same
-`slotIndex` show the same agent.
+numbered by herdr, panes inside a tab keep pane order). Reordering tabs in herdr
+therefore reorders the slots; the deck always mirrors the bar. The tab *name* is
+only a label — it does not affect order. Two keys with the same `slotIndex` show
+the same agent.
 
 Prefer a flat, no-paging layout? Place six **Agent Slot** keys (`slotIndex` 0–5)
 and skip the pager.
@@ -190,7 +207,7 @@ restart needed.
 | Verify asks "authenticity of host …?" | Host key not yet trusted: answer `yes` once by hand; the plugin never gets this prompt. |
 | Verify works only after a passphrase prompt | Passphrase-protected key. Either strip it (`ssh-keygen -p`, empty new passphrase) or load it into the agent (`ssh-add --apple-use-keychain` + `UseKeychain yes` in `~/.ssh/config`). |
 | Verify prints extra text before `ok` | Harmless — the plugin tolerates shell-rc noise. |
-| Keys stay blank in remote mode | Check the plugin log (`~/Library/Logs/ElgatoStreamDeck/`, plugin has debug enabled) for `herdr connection:` and `tunnel:` lines — they name the failing step. |
+| Keys stay blank in remote mode | Check the plugin log (`~/Library/Logs/ElgatoStreamDeck/` on macOS, `%APPDATA%\Elgato\StreamDeck\logs\` on Windows) for `herdr connection:` and `tunnel:` lines — they name the failing step. |
 | Keys go blank when an agent finishes | Fixed in 0.3.0: idle agents keep their slot. A black key now means that slot has no agent, or herdr is unreachable (check the plugin log). |
 
 ### How it works
@@ -213,6 +230,7 @@ The plugin runs on Windows, with three differences from macOS:
 | Status updates | herdr socket events (push) + 3 s safety poll | 1 s poll — Node cannot open herdr's AF_UNIX socket on Windows |
 | Press = focus | `herdr agent focus` + AppleScript raise of the terminal app | `herdr agent focus` + Win32 raise of the window that hosts herdr |
 | Remote herdr over SSH | supported | not available (the ssh forward needs Unix sockets); the Property Inspector hides it |
+| herdr inside WSL | — | supported per key, see below |
 
 Focus works out of the box: the plugin walks up from the running `herdr.exe` to
 the terminal that owns a visible window — Windows Terminal, Orca, WezTerm,
@@ -261,16 +279,22 @@ and `herdr agent list` working from `wsl.exe -d <distro> -e sh -lc`.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `HERDR_DECK_TERMINAL_APP` | `iTerm` | AppleScript name of the terminal app that hosts herdr. Set it to e.g. `Terminal`, `Ghostty`, or `WezTerm` so "press = focus" brings the right app to the front. |
+| `HERDR_DECK_TERMINAL_APP` | `iTerm` (macOS) / auto-detected (Windows) | macOS: AppleScript name of the terminal app that hosts herdr (`Terminal`, `Ghostty`, `WezTerm`, …). Windows: process name(s) of the terminal to raise, comma-separated for a preference order (`WindowsTerminal`, `Orca,WindowsTerminal`). Read when the plugin starts. |
 
 ## How it works
 
-A single store polls/streams `herdr agent list`, normalizes the agents, and
-notifies both actions to re-render. All herdr I/O is isolated in
-`src/herdr/*` (injected `run` for tests), the pure logic lives in `src/core/*`
-(unit-tested with `bun test`), and the Stream Deck actions in `src/actions/*` are
-thin glue. Key images are rendered as SVG data URIs for crisp text on the 80×80
-keys.
+Each key carries its own source (`this PC`, a WSL distro, or an SSH target). A
+runtime hub builds one runtime per source — client, store and terminal raiser —
+and hands the same runtime to every key on that source, so N keys cost one poller.
+The store fetches `herdr agent list` plus `herdr tab list` (the latter for tab
+names, numbers and therefore slot order), normalizes the agents, and routes
+renders, herdr notifications and key flashes to that source's subscribers only.
+
+All herdr I/O is isolated in `src/herdr/*` (with an injected `run` for tests): the
+CLI client, the socket event subscriber, the ssh tunnel, and the WSL streaming
+client. Pure logic lives in `src/core/*` (unit-tested with `bun test`), and the
+Stream Deck actions in `src/actions/*` are thin glue. Key images are rendered as
+SVG data URIs for crisp text on the 80×80 keys.
 
 ## Development
 
@@ -280,6 +304,27 @@ bunx tsc --noEmit           # type-check
 bun run build               # bundle to …/bin/plugin.js
 bun run watch               # rebuild + restart the plugin on change
 ```
+
+## Changelog
+
+This fork (`nzscout/stream-deck-herdr-plugin`) on top of upstream 0.2.0:
+
+- **0.3.0 — Windows.** Declares `windows` in the manifest; resolves `herdr` from
+  its own install directory with a correctly separated `PATH`; raises the window
+  hosting herdr (process-tree walk, Alt-tap to win the foreground right, one
+  long-lived PowerShell helper so a press costs ~80 ms); polls every second
+  because Node cannot open herdr's AF_UNIX socket there; hides the POSIX-only
+  remote settings.
+- **0.4.0 — Stable slots and WSL.** Idle agents keep their key, so nothing
+  reshuffles when a turn starts or ends. Reads herdr inside a WSL distro through
+  one long-lived `wsl.exe -e sh -lc` shell (a bare `wsl -e herdr` fails:
+  `~/.local/bin` is login-shell only) and raises that distro's window.
+- **0.5.0 — Per-key source.** Source, distro and SSH target are per key, backed by
+  one runtime per source; the pager got its own Property Inspector.
+- **0.6.0 — Tab titles.** Keys show the label from `herdr tab list` (the name in
+  herdr's tab bar), with `Terminal title` kept as an explicit mode.
+- **0.7.0 — Tab-ordered slots.** Slots sort by herdr's tab number instead of the
+  opaque pane id, so the deck order matches the tab bar.
 
 ## License
 
