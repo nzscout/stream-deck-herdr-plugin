@@ -52,22 +52,21 @@ export function normalize(raw: RawAgent[]): Agent[] {
     );
 }
 
-// Statuses worth a slot on the deck. Idle agents are intentionally hidden —
-// they need no attention and would otherwise consume the limited keys.
-export function visibleAgents(agents: Agent[]): Agent[] {
-  return agents.filter((a) => a.status !== "idle");
-}
-
 // Display order for the deck: pinned agents first, in pin order (so the first
-// pin lands on slot 1, the second next to it, …), kept visible even when idle;
-// then the rest with idle agents hidden. `pinned` is a list of paneIds; stale
-// pins (agent gone) are skipped.
+// pin lands on slot 1, the second next to it, …), then everyone else in the
+// normalized order.
+//
+// Idle agents keep their slot. Hiding them made every slot shift the moment an
+// agent finished a turn or a lower-numbered pane started working, so a key could
+// show a different agent (and a different terminal title) seconds after you
+// looked away. Slots now move only when a pane appears, disappears, or is pinned.
+// `pinned` is a list of paneIds; stale pins (agent gone) are skipped.
 export function orderForDisplay(all: Agent[], pinned: string[]): Agent[] {
   const pinnedSet = new Set(pinned);
   const pinnedAgents = pinned
     .map((id) => all.find((a) => a.paneId === id))
     .filter((a): a is Agent => a !== undefined);
-  const rest = visibleAgents(all.filter((a) => !pinnedSet.has(a.paneId)));
+  const rest = all.filter((a) => !pinnedSet.has(a.paneId));
   return [...pinnedAgents, ...rest];
 }
 

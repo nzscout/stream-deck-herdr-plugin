@@ -26,8 +26,9 @@ export function createAgentStore(opts: {
 }): AgentStore {
   const pageSize = opts.pageSize ?? 5;
   let state: StoreState = { agents: [], page: 0, healthy: false };
-  // Full normalized list (includes idle) so pinned-idle agents can resurface;
-  // `pinned` is paneIds in pin order (in-memory, reset on plugin restart).
+  // Full normalized list, idle included: every live agent holds a slot so the
+  // deck never reshuffles; `pinned` is paneIds in pin order (in-memory, reset on
+  // plugin restart).
   let allAgents: Agent[] = [];
   let pinned: string[] = [];
   let hasLastGood = false;
@@ -44,8 +45,8 @@ export function createAgentStore(opts: {
     state = { ...state, ...next };
     emit();
   };
-  // Re-derive the displayed list (pinned-first, idle hidden) from the current
-  // raw list + pins, clamping the page to the new length.
+  // Re-derive the displayed list (pinned-first, normalized order otherwise) from
+  // the current raw list + pins, clamping the page to the new length.
   const recompute = (extra: Partial<StoreState> = {}) => {
     const agents = orderForDisplay(allAgents, pinned);
     set({ ...extra, agents, page: clampPage(state.page, pageCount(agents.length, pageSize)) });

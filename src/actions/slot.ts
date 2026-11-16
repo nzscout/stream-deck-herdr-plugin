@@ -30,7 +30,8 @@ export class AgentSlotAction extends SingletonAction<SlotSettings> {
   constructor(
     private readonly store: AgentStore,
     private readonly herdr: HerdrClient,
-    private readonly terminal: TerminalActivator,
+    // Replaced when the herdr source changes (e.g. switching to WSL).
+    public terminal: TerminalActivator,
   ) {
     super();
   }

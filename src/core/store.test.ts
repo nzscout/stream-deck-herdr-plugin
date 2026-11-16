@@ -5,7 +5,7 @@ import type { RawAgent } from "./agents";
 
 const six: RawAgent[] = Array.from({ length: 6 }, (_, i) => ({
   agent: "claude",
-  agent_status: "working", // non-idle: idle agents are filtered out of the store
+  agent_status: "working",
   cwd: `/x/p${i}`,
   pane_id: `w1:p${i}`,
   workspace_id: "w1",
@@ -68,7 +68,7 @@ test("healthy is false until a fetch succeeds and after a failure wipe", async (
   expect(store.getState().healthy).toBe(false); // second failure wipes
 });
 
-test("idle agents are filtered out of the store", async () => {
+test("idle agents keep their slot so keys never reshuffle", async () => {
   const mixed: RawAgent[] = [
     { agent: "a", agent_status: "working", cwd: "/x/a", pane_id: "w1:p1", workspace_id: "w1" },
     { agent: "b", agent_status: "idle", cwd: "/x/b", pane_id: "w1:p2", workspace_id: "w1" },
@@ -77,10 +77,10 @@ test("idle agents are filtered out of the store", async () => {
   ];
   const store = createAgentStore({ fetchAgents: async () => mixed });
   await store.pollNow();
-  expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p1", "w1:p3"]);
+  expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p1", "w1:p2", "w1:p3", "w1:p4"]);
 });
 
-test("togglePin moves an agent to the front, keeps it when idle, cycles order", async () => {
+test("togglePin moves an agent to the front and cycles order", async () => {
   const mixed: RawAgent[] = [
     { agent: "a", agent_status: "working", cwd: "/x/a", pane_id: "w1:p1", workspace_id: "w1" },
     { agent: "b", agent_status: "idle", cwd: "/x/b", pane_id: "w1:p2", workspace_id: "w1" },
@@ -88,19 +88,18 @@ test("togglePin moves an agent to the front, keeps it when idle, cycles order", 
   ];
   const store = createAgentStore({ fetchAgents: async () => mixed });
   await store.pollNow();
-  // idle b hidden initially
-  expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p1", "w1:p3"]);
-  // pin the idle one -> resurfaces at slot 1
+  expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p1", "w1:p2", "w1:p3"]);
+  // pin the idle one -> jumps to slot 1
   store.togglePin("w1:p2");
   expect(store.isPinned("w1:p2")).toBe(true);
   expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p2", "w1:p1", "w1:p3"]);
   // second pin lands next to the first (pin order)
   store.togglePin("w1:p3");
   expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p2", "w1:p3", "w1:p1"]);
-  // unpin -> drops out of the pinned block (and idle p2 hides again)
+  // unpin -> drops out of the pinned block, back into normalized order
   store.togglePin("w1:p2");
   expect(store.isPinned("w1:p2")).toBe(false);
-  expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p3", "w1:p1"]);
+  expect(store.getState().agents.map((a) => a.paneId)).toEqual(["w1:p3", "w1:p1", "w1:p2"]);
 });
 
 test("page clamps when the agent list shrinks", async () => {

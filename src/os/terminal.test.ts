@@ -35,9 +35,19 @@ test("windows raise script claims the foreground right before raising", () => {
 
 test("windows raise script falls back to the host-terminal probe", () => {
   const script = windowsRaiseScript();
-  expect(script).toContain("Get-HerdrDeckWindowFromHerdr");
+  expect(script).toContain("Get-HerdrDeckWindowFromHost");
   expect(script).toContain("'WindowsTerminal'");
   expect(script).toContain("'Orca'");
+});
+
+test("windows raise script seeds the probe with the WSL distro when set", () => {
+  const script = windowsRaiseScript([], "Ubuntu");
+  expect(script).toContain("$script:HerdrDeckDistro = 'Ubuntu'");
+  expect(script).toContain("$_.Name -eq 'wsl.exe'");
+  // an empty distro matches any wsl.exe
+  expect(windowsRaiseScript()).toContain("$script:HerdrDeckDistro = ''");
+  // quotes in the setting cannot break out of the PowerShell string
+  expect(windowsRaiseScript([], "it's")).toContain("$script:HerdrDeckDistro = 'it''s'");
 });
 
 test("windows worker loop serves one raise per stdin line", () => {

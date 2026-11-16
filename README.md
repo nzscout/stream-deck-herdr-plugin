@@ -28,7 +28,9 @@ agent that's waiting on you.
 - **Active notifications.** When an agent flips to `blocked` or `done` you get a
   herdr notification with a sound (`request` / `done`) and the key flashes — even
   when you're not looking at the deck.
-- **Idle agents are hidden** so the deck only shows agents that matter.
+- **Stable slots.** Every live agent keeps its key while its pane exists, so
+  keys never reshuffle when an agent starts or finishes work — an idle agent
+  shows grey `○` in place instead of vanishing.
 - **Instant updates.** Refreshes on herdr socket events (push), with a slow
   safety-net poll as a backstop — no busy 1-second polling.
 
@@ -39,7 +41,7 @@ agent that's waiting on you.
 | working  | orange     | ●     | running now        |
 | blocked  | red        | ▲     | wants you          |
 | done      | green      | ✓     | finished, unseen   |
-| idle     | grey       | ○     | waiting (hidden)   |
+| idle     | grey       | ○     | waiting            |
 | unknown  | near-black | ·     | —                  |
 | empty    | black      |       | no agent in slot   |
 
@@ -181,7 +183,7 @@ restart needed.
 | Verify works only after a passphrase prompt | Passphrase-protected key. Either strip it (`ssh-keygen -p`, empty new passphrase) or load it into the agent (`ssh-add --apple-use-keychain` + `UseKeychain yes` in `~/.ssh/config`). |
 | Verify prints extra text before `ok` | Harmless — the plugin tolerates shell-rc noise. |
 | Keys stay blank in remote mode | Check the plugin log (`~/Library/Logs/ElgatoStreamDeck/`, plugin has debug enabled) for `herdr connection:` and `tunnel:` lines — they name the failing step. |
-| Keys go blank when an agent finishes | Not a bug: idle agents are hidden by design. Long-press to pin one. |
+| Keys go blank when an agent finishes | Fixed in 0.3.0: idle agents keep their slot. A black key now means that slot has no agent, or herdr is unreachable (check the plugin log). |
 
 ### How it works
 
@@ -220,6 +222,30 @@ If `herdr` is not on the environment the Stream Deck app was started with, the
 plugin looks in herdr's own install directory
 (`%USERPROFILE%\.herdr\packages\standalone\releases\*\herdr.exe`, newest
 version first) before falling back to `herdr.exe` on `PATH`.
+
+## herdr inside WSL
+
+On Windows the plugin can read herdr from a WSL distro instead of this PC. Open
+any **Agent Slot** key's Property Inspector, set **herdr** to `WSL`, and put the
+distro name in **WSL distro** (`Ubuntu`; leave empty for the default distro).
+These settings are global — set once, applies to every key.
+
+How it behaves:
+
+- **Reading** runs `wsl.exe -d <distro> -e sh -lc 'herdr agent list'` once per
+  second from a single long-lived shell, not one process per poll. A login shell
+  is used because `~/.local/bin` is only on PATH there.
+- **Press = focus** runs `herdr agent focus <pane>` inside the distro, then raises
+  the Windows Terminal window holding that distro: the raise walks up from the
+  distro's `wsl.exe` process instead of from `herdr.exe`.
+- **Notifications** from the WSL side never reach Windows, so a `blocked`/`done`
+  flip still flashes the key but posts no toast. Switch back to `This PC` if you
+  want the native notifications.
+- Both herdr installations are separate servers with their own pane ids, so the
+  plugin reads one at a time; it never merges them.
+
+Requirements: herdr 0.8.0+ installed **inside the distro**, the distro running,
+and `herdr agent list` working from `wsl.exe -d <distro> -e sh -lc`.
 
 ## Configuration
 

@@ -41,15 +41,22 @@ public class HerdrDeckWindow {
 '@
 
 $script:HerdrDeckCached = $null
+$script:HerdrDeckDistro = '__HERDR_DECK_DISTRO__'
 
-# The terminal that hosts herdr is the first ancestor of a herdr.exe process
-# that owns a top-level window: herdr runs as a TUI inside a shell inside the
-# terminal app, so the window belongs to a parent, never to herdr itself.
-function Get-HerdrDeckWindowFromHerdr {
+# The terminal that hosts herdr is the first ancestor of a herdr process that
+# owns a top-level window: herdr runs as a TUI inside a shell inside the terminal
+# app, so the window belongs to a parent, never to herdr itself. herdr on Windows
+# is herdr.exe; herdr inside WSL has no herdr.exe, so the wsl.exe of that distro
+# is the seed instead (its parent chain leads to the same terminal window).
+function Get-HerdrDeckWindowFromHost {
   $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
   $byId = @{}
   foreach ($p in $procs) { $byId[[int]$p.ProcessId] = $p }
-  foreach ($h in @($procs | Where-Object { $_.Name -eq 'herdr.exe' })) {
+  $seeds = @($procs | Where-Object { $_.Name -eq 'herdr.exe' })
+  $seeds += @($procs | Where-Object {
+    $_.Name -eq 'wsl.exe' -and ($script:HerdrDeckDistro -eq '' -or $_.CommandLine -like "*$script:HerdrDeckDistro*")
+  })
+  foreach ($h in $seeds) {
     $cur = $h
     for ($i = 0; $i -lt 8 -and $null -ne $cur; $i++) {
       $owner = Get-Process -Id $cur.ProcessId -ErrorAction SilentlyContinue
@@ -83,7 +90,7 @@ function Find-HerdrDeckHandle([string[]] $Names) {
   if ($Names.Count -eq 0 -and (Test-HerdrDeckCached)) { return [IntPtr]$script:HerdrDeckCached.Handle }
   $target = $null
   if ($Names.Count -eq 0) {
-    $target = Get-HerdrDeckWindowFromHerdr
+    $target = Get-HerdrDeckWindowFromHost
     if ($null -eq $target) { $target = Get-HerdrDeckWindowByName @(__HERDR_DECK_FALLBACK__) }
   } else {
     $target = Get-HerdrDeckWindowByName $Names
@@ -116,10 +123,19 @@ function psStringList(names: string[]): string {
   return `@(${names.map((n) => `'${n.replace(/'/g, "''")}'`).join(", ")})`;
 }
 
+// The distro is matched against wsl.exe command lines, so it is spliced into a
+// single-quoted PowerShell string (quotes doubled) and never evaluated.
+function fillPrelude(fallback: string[], distro: string): string {
+  return WIN32_PRELUDE.replace("__HERDR_DECK_FALLBACK__", psStringList(fallback)).replace(
+    "__HERDR_DECK_DISTRO__",
+    distro.replace(/'/g, "''"),
+  );
+}
+
 // One-shot variant: raise, print "ok", exit.
-export function windowsRaiseScript(names: string[] = []): string {
+export function windowsRaiseScript(names: string[] = [], distro = ""): string {
   const fallback = names.length > 0 ? names : DEFAULT_WINDOWS_TERMINAL_APPS;
-  const prelude = WIN32_PRELUDE.replace("__HERDR_DECK_FALLBACK__", psStringList(fallback));
+  const prelude = fillPrelude(fallback, distro);
   const requested = names.length > 0 ? psStringList(names) : psStringList([]);
   return `${prelude}
 
@@ -137,9 +153,9 @@ try {
 // stdout line: "warm", "ok" or "err:<message>". Spawning PowerShell per key press
 // costs about 750 ms (process start plus Add-Type); the worker makes every press
 // after the first effectively instant.
-export function windowsWorkerScript(names: string[] = []): string {
+export function windowsWorkerScript(names: string[] = [], distro = ""): string {
   const fallback = names.length > 0 ? names : DEFAULT_WINDOWS_TERMINAL_APPS;
-  const prelude = WIN32_PRELUDE.replace("__HERDR_DECK_FALLBACK__", psStringList(fallback));
+  const prelude = fillPrelude(fallback, distro);
   return `${prelude}
 
 while ($true) {
@@ -230,8 +246,8 @@ function macActivator(app: string, run: RunFn): TerminalActivator {
 // Persistent PowerShell worker: first activate() pays the ~750 ms start-up, every
 // later press is one stdin line. A crashed worker is respawned on the next
 // press; a press that never gets an answer fails instead of hanging.
-function windowsWorkerActivator(names: string[]): TerminalActivator {
-  const script = windowsWorkerScript(names);
+function windowsWorkerActivator(names: string[], distro: string): TerminalActivator {
+  const script = windowsWorkerScript(names, distro);
   const args = ["-NoProfile", "-NonInteractive", "-NoLogo", "-EncodedCommand", encodedCommand(script)];
   let child: ChildProcessWithoutNullStreams | null = null;
   let buffer = "";
@@ -319,7 +335,9 @@ function windowsWorkerActivator(names: string[]): TerminalActivator {
 }
 
 export function createTerminalActivator(
-  opts: { run?: RunFn; app?: string; platform?: NodeJS.Platform } = {},
+  // `distro` names the WSL distro hosting herdr, so the raise walks up from that
+  // distro's wsl.exe instead of from herdr.exe.
+  opts: { run?: RunFn; app?: string; platform?: NodeJS.Platform; distro?: string } = {},
 ): TerminalActivator {
   const platform = opts.platform ?? process.platform;
   if (platform === "win32") {
@@ -334,14 +352,14 @@ export function createTerminalActivator(
             "-NonInteractive",
             "-NoLogo",
             "-EncodedCommand",
-            encodedCommand(windowsRaiseScript(names)),
+            encodedCommand(windowsRaiseScript(names, opts.distro ?? "")),
           ]);
         },
         warm() {},
         dispose() {},
       };
     }
-    const activator = windowsWorkerActivator(names);
+    const activator = windowsWorkerActivator(names, opts.distro ?? "");
     activator.warm();
     return activator;
   }

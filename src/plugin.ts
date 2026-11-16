@@ -1,19 +1,26 @@
 // src/plugin.ts
 import streamDeck from "@elgato/streamdeck";
-import { createHerdrClient } from "./herdr/client";
-import { createTerminalActivator } from "./os/terminal";
+import { createHerdrClient, type HerdrClient } from "./herdr/client";
+import { createTerminalActivator, type TerminalActivator } from "./os/terminal";
 import { createAgentStore } from "./core/store";
 import { AgentSlotAction } from "./actions/slot";
 import { PagerAction } from "./actions/pager";
 import { createHerdrEvents, type EventsClient } from "./herdr/events";
 import { createSshTunnel, type Tunnel } from "./herdr/tunnel";
+import { createWslHerdrClient, type WslHerdrClient } from "./herdr/wsl";
 import { detectFlips } from "./core/transitions";
 import { labelFor } from "./core/agents";
 import type { Agent } from "./core/agents";
 
 // Plugin-wide connection settings (set from any Agent Slot property inspector).
-// Empty sshTarget = talk to the herdr server on this machine (the default).
-type GlobalSettings = { sshTarget?: string; remoteSocketPath?: string };
+// "local" talks to the herdr server on this machine (the default); "wsl" talks to
+// herdr inside a WSL distro; sshTarget (POSIX only) tunnels to a remote box.
+type GlobalSettings = {
+  source?: "local" | "wsl";
+  wslDistro?: string;
+  sshTarget?: string;
+  remoteSocketPath?: string;
+};
 
 // Node's `net` module cannot open herdr's AF_UNIX socket on Windows (it treats
 // the path as a named pipe and fails with ENOTSOCK), so there is no push channel
@@ -25,12 +32,21 @@ const POLL_MS = PUSH_EVENTS ? 3000 : 1000;
 streamDeck.logger.setLevel("info");
 
 let tunnel: Tunnel | null = null;
+let wsl: WslHerdrClient | null = null;
 
-// In remote mode every herdr CLI call targets the SSH-forwarded socket.
-const herdr = createHerdrClient({ socketPath: () => tunnel?.localSocket });
+// Swapped by applyConnection() when the source changes; the store fetches through
+// this binding, so a replacement takes effect on the next poll.
+let herdr: HerdrClient & { start?: () => void; stop?: () => void } = createHerdrClient({
+  socketPath: () => tunnel?.localSocket,
+});
+
 // undefined app → default: iTerm on macOS, herdr's host terminal on Windows.
 // Set HERDR_DECK_TERMINAL_APP to override either.
-const terminal = createTerminalActivator({ app: process.env.HERDR_DECK_TERMINAL_APP });
+let terminal: TerminalActivator = createTerminalActivator({
+  app: process.env.HERDR_DECK_TERMINAL_APP,
+});
+let terminalDistro: string | undefined;
+
 const store = createAgentStore({ fetchAgents: () => herdr.listAgents() });
 
 const slot = new AgentSlotAction(store, herdr, terminal);
@@ -70,16 +86,26 @@ const refresh = (): void => {
 let events: EventsClient | null = null;
 let appliedKey: string | null = null;
 
-// Tear down and rebuild the herdr connection (tunnel + event subscription) for
-// the given settings. Local mode: events on the default local socket. Remote
-// mode: an ssh unix-socket forward, with both the CLI and the event
-// subscription pointed at the forwarded socket; the event client (re)starts on
-// the tunnel's onUp signal so it connects the moment the forward binds instead
-// of sitting out its own reconnect backoff.
+// The Windows raise looks for the window that hosts herdr by walking up from
+// herdr.exe. In WSL mode there is no herdr.exe, so it walks up from the wsl.exe
+// of that distro instead; the activator is rebuilt when the distro changes.
+const applyTerminal = (distro: string | undefined): void => {
+  if (distro === terminalDistro) return;
+  terminalDistro = distro;
+  terminal.dispose();
+  terminal = createTerminalActivator({ app: process.env.HERDR_DECK_TERMINAL_APP, distro });
+  slot.terminal = terminal;
+  pager.terminal = terminal;
+  terminal.warm();
+};
+
+// Tear down and rebuild the herdr connection for the given settings.
 const applyConnection = (gs: GlobalSettings): void => {
+  const source = gs.source === "wsl" ? "wsl" : "local";
+  const distro = gs.wslDistro?.trim() ?? "";
   const target = gs.sshTarget?.trim() ?? "";
   const remoteSock = gs.remoteSocketPath?.trim() ?? "";
-  const key = `${target}\n${remoteSock}`;
+  const key = `${source}\n${distro}\n${target}\n${remoteSock}`;
   if (key === appliedKey) return;
   appliedKey = key;
 
@@ -87,12 +113,27 @@ const applyConnection = (gs: GlobalSettings): void => {
   events = null;
   tunnel?.stop();
   tunnel = null;
+  wsl?.stop();
+  wsl = null;
+  applyTerminal(source === "wsl" ? distro : undefined);
   // The next snapshot comes from a different server (or a rebuilt connection):
   // prime on it instead of diffing across servers, which would fire a
   // notification for every already-blocked/done agent over there. Resetting the
   // store (not just the baseline) keeps an in-flight fetch or a pin/page
   // re-render from priming the baseline with the old server's list.
   store.reset();
+
+  if (source === "wsl") {
+    streamDeck.logger.info(`herdr connection: wsl ${distro || "(default distro)"}`);
+    const client = createWslHerdrClient({ distro: distro || undefined, intervalMs: 1000 });
+    client.start();
+    wsl = client;
+    herdr = client;
+    refresh();
+    return;
+  }
+
+  herdr = createHerdrClient({ socketPath: () => tunnel?.localSocket });
 
   if (target === "" || !PUSH_EVENTS) {
     if (target !== "") {
@@ -125,9 +166,10 @@ const applyConnection = (gs: GlobalSettings): void => {
 };
 
 // Stream Deck stops the plugin by terminating the process; without this the
-// ssh forward child would outlive us and its socket file would leak in tmpdir.
+// ssh forward and wsl stream children would outlive us.
 process.on("exit", () => {
   tunnel?.stop();
+  wsl?.stop();
   terminal.dispose();
 });
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
