@@ -63,6 +63,8 @@
         setting="termWindow"
         datasource="terminalWindows"
         placeholder="Auto (detected)"
+        loading="Looking for terminal windows..."
+        hot-reload
       ></sdpi-select>
     </sdpi-item>
     <sdpi-item label="Tab" data-windows-only>
@@ -87,6 +89,16 @@
       </p>
     </sdpi-item>
     <script>
+      // A data source request can be lost while the plugin is (re)starting, which
+      // leaves the select spinning forever; retry a couple of times.
+      customElements.whenDefined("sdpi-select").then(function () {
+        var sel = document.querySelector('sdpi-select[setting="termWindow"]');
+        if (!sel || typeof sel.refresh !== "function") return;
+        [1500, 4000].forEach(function (ms) {
+          setTimeout(function () { sel.refresh(); }, ms);
+        });
+      });
+
       var onWindows = navigator.userAgent.indexOf("Windows") !== -1;
       // The Remote fields only make sense where herdr's Unix socket can be
       // forwarded over ssh; the WSL fields only where WSL exists.

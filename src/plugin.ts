@@ -115,19 +115,32 @@ const pager = new PagerAction(hub);
 // The Property Inspector asks for the terminal windows that exist right now, so the
 // "Window title" field is a picker instead of a text box. One probe helper owns the
 // enumeration; it is created on first use and reused afterwards.
+// The Property Inspector asks for the terminal windows that exist right now, so the
+// "Window" field is a picker instead of a text box. One probe helper owns the
+// enumeration; it is created on first use and reused afterwards.
 let probe: TerminalActivator | null = null;
 streamDeck.ui.onSendToPlugin(async (ev) => {
   const payload = ev.payload as { event?: string } | undefined;
   if (payload?.event !== "terminalWindows") return;
-  probe ??= createTerminalActivator({ app: process.env.HERDR_DECK_TERMINAL_APP });
-  const windows = await probe.listWindows();
-  await streamDeck.ui.sendToPropertyInspector({
-    event: "terminalWindows",
-    items: [
-      { label: "Auto (detected)", value: "" },
-      ...windows.map((w) => ({ label: w.title, value: w.title })),
-    ],
-  });
+  try {
+    probe ??= createTerminalActivator({ app: process.env.HERDR_DECK_TERMINAL_APP });
+    const windows = await probe.listWindows();
+    await streamDeck.ui.sendToPropertyInspector({
+      event: "terminalWindows",
+      items: [
+        { label: "Auto (detected)", value: "" },
+        ...windows.map((w) => ({ label: w.title, value: w.title })),
+      ],
+    });
+  } catch (e) {
+    // A failing enumeration must not leave the picker spinning: answer with the
+    // detected-window option only.
+    streamDeck.logger.error(`terminal window list failed: ${String(e)}`);
+    await streamDeck.ui.sendToPropertyInspector({
+      event: "terminalWindows",
+      items: [{ label: "Auto (detected)", value: "" }],
+    });
+  }
 });
 
 // Stream Deck stops the plugin by terminating the process; without this the ssh

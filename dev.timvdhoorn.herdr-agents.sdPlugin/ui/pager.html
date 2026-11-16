@@ -36,6 +36,8 @@
         setting="termWindow"
         datasource="terminalWindows"
         placeholder="Auto (detected)"
+        loading="Looking for terminal windows..."
+        hot-reload
       ></sdpi-select>
     </sdpi-item>
     <sdpi-item label="Tab" data-windows-only>
@@ -53,6 +55,14 @@
       </sdpi-select>
     </sdpi-item>
     <script>
+      customElements.whenDefined("sdpi-select").then(function () {
+        var sel = document.querySelector('sdpi-select[setting="termWindow"]');
+        if (!sel || typeof sel.refresh !== "function") return;
+        [1500, 4000].forEach(function (ms) {
+          setTimeout(function () { sel.refresh(); }, ms);
+        });
+      });
+
       var onWindows = navigator.userAgent.indexOf("Windows") !== -1;
       document.querySelectorAll(onWindows ? "[data-posix-only]" : "[data-windows-only]").forEach(function (el) {
         el.remove();

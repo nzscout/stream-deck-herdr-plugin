@@ -342,6 +342,9 @@ This fork (`nzscout/stream-deck-herdr-plugin`) on top of upstream 0.2.0:
   opaque pane id, so the deck order matches the tab bar.
 - **0.7.1 — Maximized windows stay maximized.** The raise only restores a window
   that is minimized; `SW_RESTORE` used to undo maximize on every press.
+- **0.9.1 — Picker reliability.** The select retries its data source request (a
+  first request can be lost while the plugin restarts) and shows the detected
+  window option even when enumeration fails, instead of spinning forever.
 - **0.9.0 — Window picker.** The window list is filled live by the plugin (through
   the Property Inspector datasource), so a key picks its window from a dropdown
   instead of typing a title.
