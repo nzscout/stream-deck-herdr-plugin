@@ -168,11 +168,18 @@ function Find-HerdrDeckHandle([string] $WindowHint) {
   if ($WindowHint) {
     $chosen = $candidates | Where-Object { (Get-HerdrDeckTitle $_.Handle).IndexOf($WindowHint, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | Select-Object -First 1
     # A title hint can go stale (the title follows the active tab), so a miss falls
-    # back to the detected host window instead of failing the press.
+    # back to the detected host window instead of failing the press. The candidate
+    # list is every window of every known terminal app; its first entry is not the
+    # herdr host, and raising it would also send Ctrl+Alt+<n> into that window.
     if ($null -eq $chosen) {
-      $hosts = @(Get-HerdrDeckHostProcesses)
-      foreach ($hostProc in $hosts) { foreach ($w in $hostProc.Windows) { $candidates += [pscustomobject]@{ ProcessId = $hostProc.ProcessId; Handle = $w } } }
-      $chosen = $candidates | Select-Object -First 1
+      foreach ($hostProc in @(Get-HerdrDeckHostProcesses)) {
+        foreach ($w in @($hostProc.Windows)) {
+          $chosen = [pscustomobject]@{ ProcessId = $hostProc.ProcessId; Handle = $w }
+          break
+        }
+        if ($null -ne $chosen) { break }
+      }
+      if ($null -eq $chosen) { $chosen = $candidates | Select-Object -First 1 }
     }
   } else {
     $chosen = $candidates | Select-Object -First 1

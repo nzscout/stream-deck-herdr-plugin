@@ -70,6 +70,23 @@ test("windows raise script seeds the probe with the WSL distro when set", () => 
   expect(windowsRaiseScript({}, "it's")).toContain("$script:HerdrDeckDistro = 'it''s'");
 });
 
+test("a stale window hint falls back to the herdr host, not the first enumerated window", () => {
+  // The miss path used to append host windows onto the candidate list and then
+  // take the first candidate. That list is every window of every known terminal
+  // app (Windows Terminal, VS Code, …), so the first entry is not the process
+  // hosting herdr — and the wrong handle was cached for the hint.
+  for (const script of [windowsRaiseScript({ window: "gone" }), windowsWorkerScript()]) {
+    const start = script.indexOf("A title hint can go stale");
+    const miss = script.slice(start, script.indexOf("$script:HerdrDeckCached =", start));
+    expect(miss).toContain("Get-HerdrDeckHostProcesses");
+    expect(miss).not.toContain("$candidates +=");
+    const hostWalk = miss.indexOf("Get-HerdrDeckHostProcesses");
+    const takeFirst = miss.indexOf("$candidates | Select-Object -First 1");
+    expect(hostWalk).toBeGreaterThan(-1);
+    expect(takeFirst).toBeGreaterThan(hostWalk);
+  }
+});
+
 test("a window hint is passed through as a PowerShell string literal", () => {
   const script = windowsRaiseScript({ window: "pwsh in igore" });
   expect(script).toContain("-WindowHint 'pwsh in igore'");
