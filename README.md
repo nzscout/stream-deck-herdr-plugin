@@ -240,16 +240,16 @@ so the plugin taps Alt first, which is what makes the raise work from a Stream
 Deck press. A minimized window is restored; a maximized one is left at its size.
 
 **Several windows or tabs?** One `WindowsTerminal.exe` can own several windows,
-and herdr itself may live in one tab of a window, so two per-key fields pin the
+and herdr itself may live in one tab of a window, so two per-key pickers pin the
 target exactly:
 
-- **Window title** — part of the title of the window to raise (case-insensitive),
-  e.g. `pwsh in igore`. Empty = the window detected from herdr's process. If the
-  hint matches nothing (titles follow the active tab and can change), the press
-  falls back to the detected window instead of failing.
-- **Terminal tab** — `1`–`9`; after raising, the plugin sends Windows Terminal's
-  `Ctrl+Alt+<n>` to select that tab, which is what actually puts herdr on screen
-  when you were looking at another tab.
+- **Window** — a dropdown of the terminal windows that exist right now; the plugin
+  enumerates them when the inspector opens, so there is nothing to type. The
+  default `Auto (detected)` follows the window found from herdr's process, and a
+  saved window that no longer exists falls back to that instead of failing.
+- **Tab** — `Tab 1` … `Tab 9`, or `Leave active tab`. After raising, the plugin
+  sends Windows Terminal's `Ctrl+Alt+<n>` to select that tab, which is what
+  actually puts herdr on screen when you were looking at another tab.
 
 Tab selection depends on Windows Terminal's default `switchToTab` binding
 (`Ctrl+Alt+1`…`Ctrl+Alt+9`); if you rebound those keys, leave the field empty.
@@ -342,6 +342,9 @@ This fork (`nzscout/stream-deck-herdr-plugin`) on top of upstream 0.2.0:
   opaque pane id, so the deck order matches the tab bar.
 - **0.7.1 — Maximized windows stay maximized.** The raise only restores a window
   that is minimized; `SW_RESTORE` used to undo maximize on every press.
+- **0.9.0 — Window picker.** The window list is filled live by the plugin (through
+  the Property Inspector datasource), so a key picks its window from a dropdown
+  instead of typing a title.
 - **0.8.0 — Window and tab targeting.** The raise enumerates every window of the
   terminal process instead of trusting `MainWindowHandle` (one
   `WindowsTerminal.exe` can own several windows, which is why a press sometimes

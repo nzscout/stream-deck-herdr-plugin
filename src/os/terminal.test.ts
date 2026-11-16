@@ -5,6 +5,7 @@ import {
   DEFAULT_TERMINAL_APP,
   DEFAULT_WINDOWS_TERMINAL_APPS,
   encodedCommand,
+  parseWindowList,
   windowsRaiseScript,
   windowsWorkerScript,
   type RunFn,
@@ -122,4 +123,23 @@ test("the default Windows terminal preference list still covers common hosts", (
 test("encodedCommand round-trips UTF-16LE", () => {
   const script = "Write-Output 'ok'";
   expect(Buffer.from(encodedCommand(script), "base64").toString("utf16le")).toBe(script);
+});
+
+test("the window list comes from the helper as JSON", () => {
+  expect(parseWindowList('[{"title":"pwsh in igore","handle":"123","pid":42}]')).toEqual([
+    { title: "pwsh in igore", handle: "123", pid: 42 },
+  ]);
+  // A single object (PowerShell renders a one-element array either way) still works.
+  expect(parseWindowList('{"title":"solo","handle":"1","pid":7}').map((w) => w.title)).toEqual(["solo"]);
+  // Titles are the only required field; junk is dropped, never thrown.
+  expect(parseWindowList("not json")).toEqual([]);
+  expect(parseWindowList("[]")).toEqual([]);
+  expect(parseWindowList('[{"handle":"1"}]')).toEqual([]);
+});
+
+test("the helper can enumerate windows for the picker", () => {
+  const script = windowsWorkerScript();
+  expect(script).toContain("$line -eq 'windows'");
+  expect(script).toContain("Get-HerdrDeckWindowList");
+  expect(script).toContain("ConvertTo-Json");
 });

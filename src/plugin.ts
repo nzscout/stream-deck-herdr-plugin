@@ -1,7 +1,7 @@
 // src/plugin.ts
 import streamDeck from "@elgato/streamdeck";
 import { createHerdrClient, type HerdrClient } from "./herdr/client";
-import { createTerminalActivator } from "./os/terminal";
+import { createTerminalActivator, type TerminalActivator } from "./os/terminal";
 import { createAgentStore } from "./core/store";
 import { AgentSlotAction } from "./actions/slot";
 import { PagerAction } from "./actions/pager";
@@ -111,6 +111,24 @@ const hub = createRuntimeHub(buildRuntime, log);
 
 const slot = new AgentSlotAction(hub);
 const pager = new PagerAction(hub);
+
+// The Property Inspector asks for the terminal windows that exist right now, so the
+// "Window title" field is a picker instead of a text box. One probe helper owns the
+// enumeration; it is created on first use and reused afterwards.
+let probe: TerminalActivator | null = null;
+streamDeck.ui.onSendToPlugin(async (ev) => {
+  const payload = ev.payload as { event?: string } | undefined;
+  if (payload?.event !== "terminalWindows") return;
+  probe ??= createTerminalActivator({ app: process.env.HERDR_DECK_TERMINAL_APP });
+  const windows = await probe.listWindows();
+  await streamDeck.ui.sendToPropertyInspector({
+    event: "terminalWindows",
+    items: [
+      { label: "Auto (detected)", value: "" },
+      ...windows.map((w) => ({ label: w.title, value: w.title })),
+    ],
+  });
+});
 
 // Stream Deck stops the plugin by terminating the process; without this the ssh
 // forwards and WSL shells would outlive us.

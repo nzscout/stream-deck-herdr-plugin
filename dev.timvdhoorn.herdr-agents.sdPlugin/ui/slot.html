@@ -56,24 +56,34 @@
         "ok". See README &rsaquo; Remote herdr over SSH.
       </p>
     </sdpi-item>
-    <sdpi-item label="Window title" data-windows-only>
-      <sdpi-textfield
+    <sdpi-item label="Window" data-windows-only>
+      <!-- Filled live by the plugin (datasource): no typing, and it cannot go
+           stale because the list is enumerated when the inspector opens. -->
+      <sdpi-select
         setting="termWindow"
-        placeholder="part of the terminal window title (empty = detected)"
-      ></sdpi-textfield>
+        datasource="terminalWindows"
+        placeholder="Auto (detected)"
+      ></sdpi-select>
     </sdpi-item>
-    <sdpi-item label="Terminal tab" data-windows-only>
-      <sdpi-textfield
-        setting="termTab"
-        placeholder="1-9 (empty = leave the active tab)"
-      ></sdpi-textfield>
+    <sdpi-item label="Tab" data-windows-only>
+      <sdpi-select setting="termTab" default="">
+        <option value="">Leave active tab</option>
+        <option value="1">Tab 1</option>
+        <option value="2">Tab 2</option>
+        <option value="3">Tab 3</option>
+        <option value="4">Tab 4</option>
+        <option value="5">Tab 5</option>
+        <option value="6">Tab 6</option>
+        <option value="7">Tab 7</option>
+        <option value="8">Tab 8</option>
+        <option value="9">Tab 9</option>
+      </sdpi-select>
     </sdpi-item>
     <sdpi-item label="Terminal" data-windows-only>
       <p style="margin: 0; font-size: 8pt; color: #969696">
         A press raises the terminal hosting herdr; Windows Terminal can own several
-        windows, so name one here if the wrong window comes up. The tab is selected
-        with <code>Ctrl+Alt+&lt;n&gt;</code>. Set
-        <code>HERDR_DECK_TERMINAL_APP</code> to override the detected host app.
+        windows, so pick one when the wrong window comes up. The tab is selected
+        with <code>Ctrl+Alt+&lt;n&gt;</code>.
       </p>
     </sdpi-item>
     <script>

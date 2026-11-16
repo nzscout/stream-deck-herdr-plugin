@@ -208,6 +208,26 @@ function Select-HerdrDeckTab([int] $Tab) {
   [HerdrDeckWindow]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero)
 }
 
+# Windows a picker can offer: every window of the known terminal apps, so the
+# Property Inspector can list them instead of asking the user to type a title.
+function Get-HerdrDeckWindowList {
+  $list = New-Object System.Collections.Generic.List[object]
+  $seen = @{}
+  foreach ($name in __HERDR_DECK_FALLBACK__) {
+    foreach ($p in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+      foreach ($w in @(Get-HerdrDeckProcessWindows ([int]$p.Id))) {
+        $title = Get-HerdrDeckTitle $w
+        if (-not $title) { continue }
+        $key = [string]$w
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $list.Add([pscustomobject]@{ title = $title; handle = $key; pid = [int]$p.Id })
+      }
+    }
+  }
+  return $list
+}
+
 function Invoke-HerdrDeckRaise([string] $WindowHint, [int] $Tab) {
   $handle = Find-HerdrDeckHandle $WindowHint
   Show-HerdrDeckWindow -Handle $handle
@@ -224,9 +244,10 @@ function psStringList(names: string[]): string {
 }
 
 function fillPrelude(distro: string, apps: string[] = []): string {
-  // WT_WINDOW_CLASS is interpolated when WIN32_PRELUDE is built.
+  // WT_WINDOW_CLASS is interpolated when WIN32_PRELUDE is built. The fallback list
+  // appears in more than one function, so every occurrence must be replaced.
   const fallback = apps.length > 0 ? apps : DEFAULT_WINDOWS_TERMINAL_APPS;
-  return WIN32_PRELUDE.replace("__HERDR_DECK_DISTRO__", distro.replace(/'/g, "''")).replace(
+  return WIN32_PRELUDE.replaceAll("__HERDR_DECK_DISTRO__", distro.replace(/'/g, "''")).replaceAll(
     "__HERDR_DECK_FALLBACK__",
     psStringList(fallback),
   );
@@ -267,6 +288,10 @@ while ($true) {
     if ($line -eq 'detect') {
       [void](Find-HerdrDeckHandle '')
       [Console]::Out.WriteLine('warm')
+    } elseif ($line -eq 'windows') {
+      # JSON on its own line; the plugin turns it into a picker list.
+      $windows = @(Get-HerdrDeckWindowList)
+      [Console]::Out.WriteLine((ConvertTo-Json -InputObject $windows -Compress -Depth 3))
     } elseif ($line.StartsWith('raise')) {
       $windowHint = ''
       $tab = 0
@@ -319,8 +344,30 @@ function parseApps(app: string | undefined): string[] {
     .filter((s) => s.length > 0);
 }
 
+export type TerminalWindow = { title: string; handle: string; pid?: number };
+
+// The picker list is JSON from the helper; anything else means "no windows".
+export function parseWindowList(raw: string): TerminalWindow[] {
+  try {
+    const parsed: unknown = JSON.parse(raw.trim() || "[]");
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    return items
+      .map((item): TerminalWindow | null => {
+        const w = item as Partial<TerminalWindow>;
+        return typeof w?.title === "string" && w.title.length > 0
+          ? { title: w.title, handle: String(w.handle ?? ""), pid: typeof w.pid === "number" ? w.pid : undefined }
+          : null;
+      })
+      .filter((w): w is TerminalWindow => w !== null);
+  } catch {
+    return [];
+  }
+}
+
 export type TerminalActivator = {
   activate(hints?: RaiseHints): Promise<void>;
+  // Terminal windows that can host herdr, for the Property Inspector picker.
+  listWindows(): Promise<TerminalWindow[]>;
   // Pay one-time start-up cost ahead of the first press (no-op where cheap).
   warm(): void;
   dispose(): void;
@@ -344,6 +391,9 @@ function macActivator(app: string, run: RunFn): TerminalActivator {
     async activate() {
       await run(OSASCRIPT, ["-e", `tell application "${app}" to activate`]);
     },
+    async listWindows() {
+      return [];
+    },
     warm() {},
     dispose() {},
   };
@@ -357,7 +407,7 @@ function windowsWorkerActivator(distro: string, apps: string[]): TerminalActivat
   const args = ["-NoProfile", "-NonInteractive", "-NoLogo", "-EncodedCommand", encodedCommand(script)];
   let child: ChildProcessWithoutNullStreams | null = null;
   let buffer = "";
-  let waiters: Array<{ resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }> = [];
+  let waiters: Array<{ resolve: (value: string) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }> = [];
 
   const failAll = (err: Error): void => {
     const pending = waiters;
@@ -369,13 +419,13 @@ function windowsWorkerActivator(distro: string, apps: string[]): TerminalActivat
   };
 
   const onLine = (line: string): void => {
-    // Pre-warm answers ("warm") carry no press with them.
+    // Pre-warm answers ("warm") carry no request with them.
     if (line.trim() === "warm") return;
     const waiter = waiters.shift();
     if (!waiter) return;
     clearTimeout(waiter.timer);
     if (line.startsWith("err:")) waiter.reject(new Error(line.slice(4).trim() || "raise failed"));
-    else waiter.resolve();
+    else waiter.resolve(line);
   };
 
   const ensureChild = (): ChildProcessWithoutNullStreams => {
@@ -411,23 +461,33 @@ function windowsWorkerActivator(distro: string, apps: string[]): TerminalActivat
     return Object.keys(payload).length > 0 ? `raise ${JSON.stringify(payload)}` : "raise";
   };
 
+  const send = (text: string, timeoutMessage: string): Promise<string> =>
+    new Promise<string>((resolve, reject) => {
+      let proc: ChildProcessWithoutNullStreams;
+      try {
+        proc = ensureChild();
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      const timer = setTimeout(() => {
+        waiters = waiters.filter((w) => w.timer !== timer);
+        reject(new Error(timeoutMessage));
+      }, RAISE_TIMEOUT_MS);
+      waiters.push({ resolve, reject, timer });
+      proc.stdin.write(`${text}\n`);
+    });
+
   return {
     activate(hints = {}) {
-      return new Promise<void>((resolve, reject) => {
-        let proc: ChildProcessWithoutNullStreams;
-        try {
-          proc = ensureChild();
-        } catch (e) {
-          reject(e instanceof Error ? e : new Error(String(e)));
-          return;
-        }
-        const timer = setTimeout(() => {
-          waiters = waiters.filter((w) => w.timer !== timer);
-          reject(new Error("raise terminal timed out"));
-        }, RAISE_TIMEOUT_MS);
-        waiters.push({ resolve, reject, timer });
-        proc.stdin.write(`${command(hints)}\n`);
-      });
+      return send(command(hints), "raise terminal timed out").then(() => undefined);
+    },
+    async listWindows() {
+      try {
+        return parseWindowList(await send("windows", "terminal window list timed out"));
+      } catch {
+        return [];
+      }
     },
     warm() {
       // Spawn (and pre-detect) now so the first press does not pay for it.
@@ -469,6 +529,9 @@ export function createTerminalActivator(
             "-EncodedCommand",
             encodedCommand(windowsRaiseScript(hints, opts.distro ?? "", apps)),
           ]);
+        },
+        async listWindows() {
+          return [];
         },
         warm() {},
         dispose() {},
